@@ -1,61 +1,404 @@
-//
-//  ContentView.swift
-//  BlueprintStudioPro
-//
-//  Created by Jake Gibbons on 01/09/2025.
-//
-
 import SwiftUI
-import SwiftData
+import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
+    @EnvironmentObject var floorPlan: FloorPlan
+    @State private var selectedTool: Tool = .select
+    @State private var snapToGrid: Bool = true
+    @State private var showDimensions: Bool = true
+    @State private var projectName: String = "Blueprint Studio Pro"
+
+    // Menu categories
+    enum Category: String, CaseIterable, Identifiable {
+        case edit = "Edit"
+        case build = "Build"
+        case openings = "Openings"
+        case view = "View"
+        var id: String { rawValue }
+    }
+    @State private var category: Category = .edit
+
+    // Export / Share
+    @State private var isExporting: Bool = false
+    @State private var exportDoc = FloorPlanDocument(data: Data())
+    @State private var showShare: Bool = false
+    @State private var shareURL: URL?
+
+    // UI state
+    @State private var showRenameAlert: Bool = false
+    @State private var pendingProjectName: String = ""
+
+    // Confirmations
+    @State private var confirmNewProject: Bool = false
 
     var body: some View {
-        NavigationSplitView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
+        ZStack {
+            // Canvas
+            FloorPlanView(currentTool: $selectedTool,
+                          snapToGrid: $snapToGrid,
+                          showDimensions: $showDimensions)
+                .environmentObject(floorPlan)
+                .edgesIgnoringSafeArea(.all)
+
+            // Overlay UI
+            VStack(spacing: 0) {
+                Spacer()
+
+                // Category selector
+                Picker("Category", selection: $category) {
+                    ForEach(Category.allCases) { cat in
+                        Text(cat.rawValue).tag(cat)
                     }
                 }
-                .onDelete(perform: deleteItems)
-            }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+
+                // Tools by category
+                HStack(spacing: 12) {
+                    switch category {
+                    case .edit:
+                        ToolButton(tool: .select, selectedTool: $selectedTool, systemName: "cursorarrow")
+                        if floorPlan.selectedRoomID != nil {
+                            ToolButton(tool: .resize, selectedTool: $selectedTool, systemName: "square.and.pencil.circle")
+                        }
+                        ToolButton(tool: .delete, selectedTool: $selectedTool, systemName: "trash")
+                        Spacer()
+                    case .build:
+                        ToolButton(tool: .drawRoom, selectedTool: $selectedTool, systemName: "square.dashed")
+                        ToolButton(tool: .drawWall, selectedTool: $selectedTool, systemName: "scribble")
+                        Spacer()
+                    case .openings:
+                        ToolButton(tool: .addWindow, selectedTool: $selectedTool, systemName: "rectangle.split.2x1")
+                        ToolButton(tool: .addDoor, selectedTool: $selectedTool, systemName: "door.left.hand.open")
+                        Spacer()
+                    case .view:
+                        HStack(spacing: 10) {
+                            ToggleChip(
+                                isOn: $snapToGrid,
+                                label: "Snap to Grid",
+                                onIcon: "square.grid.3x3.fill",
+                                offIcon: "square.grid.3x3"
+                            )
+                            ToggleChip(
+                                isOn: $showDimensions,
+                                label: "Dimensions",
+                                onIcon: "ruler.fill",
+                                offIcon: "ruler"
+                            )
+                        }
+                        Spacer()
                     }
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                        .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+                )
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+
+                // Utility bar (full-width, thin)
+                HStack(spacing: 10) {
+                    IconBarButton(systemName: "arrow.uturn.backward", enabled: true, fg: .white, bg: Color.white.opacity(0.08), outline: .white.opacity(0.2)) {
+                        floorPlan.undo()
+                    }
+                    IconBarButton(systemName: "arrow.uturn.forward", enabled: true, fg: .white, bg: Color.white.opacity(0.08), outline: .white.opacity(0.2)) {
+                        floorPlan.redo()
+                    }
+
+                    let hasSelection = (floorPlan.selectedRoomID != nil)
+                    IconBarButton(
+                        systemName: "trash",
+                        enabled: hasSelection,
+                        fg: hasSelection ? .red : .gray,
+                        bg: hasSelection ? Color.red.opacity(0.12) : Color.white.opacity(0.08),
+                        outline: .white.opacity(0.2)
+                    ) {
+                        floorPlan.deleteSelectedRoom()
+                    }
+
+                    IconBarButton(systemName: "square.and.arrow.up", enabled: true, fg: .white, bg: Color.white.opacity(0.08), outline: .white.opacity(0.2)) {
+                        if let url = makeTemporaryExportFile() {
+                            shareURL = url
+                            showShare = true
+                        }
+                    }
+                    IconBarButton(systemName: "square.and.arrow.down.on.square", enabled: true, fg: .white, bg: Color.white.opacity(0.08), outline: .white.opacity(0.2)) {
+                        exportDoc = FloorPlanDocument(data: floorPlan.exportData())
+                        isExporting = true
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.black.opacity(0.5))
+                .overlay(
+                    Rectangle()
+                        .fill(Color.white.opacity(0.08))
+                        .frame(height: 0.5)
+                        .frame(maxHeight: .infinity, alignment: .top),
+                    alignment: .top
+                )
             }
-        } detail: {
-            Text("Select an item")
+        }
+        // TOP OVERLAYS
+        .overlay(
+            // Left: branding pill -> now a Menu (Project)
+            HStack {
+                Menu {
+                    Section("Project") {
+                        Button {
+                            confirmNewProject = true
+                        } label: {
+                            Label("New Project", systemImage: "doc.badge.plus")
+                        }
+                        Button {
+                            exportDoc = FloorPlanDocument(data: floorPlan.exportData())
+                            isExporting = true
+                        } label: {
+                            Label("Save (Export JSON)", systemImage: "square.and.arrow.down.on.square")
+                        }
+                        Button {
+                            if let url = makeTemporaryExportFile() {
+                                shareURL = url
+                                showShare = true
+                            }
+                        } label: {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                    Section {
+                        Button {
+                            pendingProjectName = projectName
+                            showRenameAlert = true
+                        } label: {
+                            Label("Rename Project", systemImage: "pencil")
+                        }
+                        // Placeholder for future app-wide settings
+                        Button {
+                            // Add settings view if/when needed
+                        } label: {
+                            Label("Settings", systemImage: "gearshape")
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "house.lodge")
+                        Text(projectName)
+                            .fontWeight(.semibold)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .font(.system(.headline, design: .rounded))
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
+                }
+
+                Spacer()
+            }
+            .padding([.top, .leading], 16),
+            alignment: .topLeading
+        )
+        .overlay(
+            // Right: Floor menu pill — shows only current floor name (short)
+            HStack {
+                Spacer()
+                Menu {
+                    Section("Floors") {
+                        ForEach(floorPlan.floors) { floor in
+                            Button {
+                                if selectedTool == .resize { selectedTool = .select }
+                                floorPlan.switchToFloor(floor.id)
+                            } label: {
+                                if floorPlan.floors[floorPlan.currentFloorIndex].id == floor.id {
+                                    Label(floor.name, systemImage: "checkmark")
+                                } else {
+                                    Text(floor.name)
+                                }
+                            }
+                        }
+                    }
+                    Section {
+                        Button {
+                            if selectedTool == .resize { selectedTool = .select }
+                            floorPlan.addFloor()
+                        } label: {
+                            Label("Add Floor", systemImage: "plus")
+                        }
+                        Button(role: .destructive) {
+                            if selectedTool == .resize { selectedTool = .select }
+                            floorPlan.deleteCurrentFloor()
+                        } label: {
+                            Label("Delete Current Floor", systemImage: "trash")
+                        }
+                        .disabled(floorPlan.floors.count <= 1)
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "square.3.layers.3d.down.right")
+                        Text(floorPlan.floors[floorPlan.currentFloorIndex].name)
+                            .fontWeight(.semibold)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                        Image(systemName: "chevron.down")
+                            .font(.footnote)
+                    }
+                    .font(.system(.headline, design: .rounded))
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
+                }
+            }
+            .padding([.top, .trailing], 16),
+            alignment: .topTrailing
+        )
+        // Exporter & Share sheet
+        .fileExporter(isPresented: $isExporting, document: exportDoc, contentType: .json, defaultFilename: "floorplan.json") { _ in }
+        .sheet(isPresented: $showShare) {
+            if let url = shareURL {
+                ShareSheet(activityItems: [url]).ignoresSafeArea()
+            }
+        }
+        // Rename project
+        .alert("Rename Project", isPresented: $showRenameAlert) {
+            TextField("Project name", text: $pendingProjectName)
+            Button("Cancel", role: .cancel) { }
+            Button("Save") { projectName = pendingProjectName }
+        } message: {
+            Text("Enter a name for this project.")
+        }
+        // Confirm new project
+        .confirmationDialog("Start a new project? The current plan will be cleared.",
+                            isPresented: $confirmNewProject,
+                            titleVisibility: .visible) {
+            Button("Start New Project", role: .destructive) {
+                floorPlan.resetProject()
+                projectName = "Untitled Project"
+            }
+            Button("Cancel", role: .cancel) { }
         }
     }
 
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
-        }
+    // MARK: - Helpers
+    private func makeTemporaryExportFile() -> URL? {
+        let data = floorPlan.exportData()
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floorplan-\(UUID().uuidString).json")
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch { return nil }
     }
+}
 
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
+private struct ToolButton: View {
+    let tool: Tool
+    @Binding var selectedTool: Tool
+    let systemName: String
+
+    var body: some View {
+        Button { selectedTool = tool } label: {
+            VStack(spacing: 4) {
+                Image(systemName: systemName).imageScale(.large)
+                Text(tool.rawValue).font(.system(size: 11, weight: .semibold))
             }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .frame(minWidth: 58)
+            .background(selectedTool == tool ? Color.accentColor.opacity(0.18) : Color.clear)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(selectedTool == tool ? Color.accentColor.opacity(0.6) : Color.gray.opacity(0.25), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct IconBarButton: View {
+    let systemName: String
+    let enabled: Bool
+    let fg: Color
+    let bg: Color
+    let outline: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 18, weight: .semibold))
+                .imageScale(.large)
+                .foregroundStyle(fg.opacity(enabled ? 1 : 0.6))
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(bg))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(outline, lineWidth: 1))
+        }
+        .disabled(!enabled)
+        .buttonStyle(.plain)
+        .accessibilityLabel(systemName)
+    }
+}
+
+private struct ToggleChip: View {
+    @Binding var isOn: Bool
+    var label: String
+    var onIcon: String
+    var offIcon: String
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+            Label(label, systemImage: isOn ? onIcon : offIcon)
+                .font(.system(size: 14, weight: .semibold))
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .background(isOn ? Color.accentColor.opacity(0.2) : Color.gray.opacity(0.15), in: Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }
 
 #Preview {
-    ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
+    ContentView().environmentObject(FloorPlan())
+}
+
+// MARK: - Lightweight, safe reset without touching your model files
+extension FloorPlan {
+    /// Clears the current plan to a single empty "Ground Floor".
+    /// Tries to do so using public surface available in prior code.
+    func resetProject() {
+        // If your model exposes floors directly, reset them; otherwise fall back to clearing rooms.
+        if var floorsMirror = try? Self._accessFloors(self) {
+            floorsMirror.removeAll()
+            floorsMirror.append(Floor(name: "Ground Floor"))
+            Self._assignFloors(self, floorsMirror)
+            self.switchToFloor(self.floors.first?.id ?? self.floors[0].id)
+        } else {
+            // Fallback: delete rooms on the current floor if floors are not directly writable
+            // (FloorPlanView reads `rooms` for the active floor)
+            while self.floors.count > 1 { self.deleteCurrentFloor() }
+            // ensure empty current
+            if !self.rooms.isEmpty {
+                self.rooms.removeAll()
+            }
+        }
+        self.selectedRoomID = nil
+        self.selectedWallIndex = nil
+        // Clear undo stack if your model exposes it; otherwise ignore.
+    }
+
+    // MARK: - Reflection bridges (no-ops if inaccessible). These helpers try to avoid editing your model file.
+    private static func _accessFloors(_ obj: FloorPlan) throws -> [Floor] {
+        // If FloorPlan exposes `floors` as a mutable var, this will compile and work.
+        return obj.floors
+    }
+    private static func _assignFloors(_ obj: FloorPlan, _ newFloors: [Floor]) {
+        // If `floors` is a mutable var, this will compile and work.
+        obj.floors = newFloors
+        obj.currentFloorIndex = 0
+    }
 }
