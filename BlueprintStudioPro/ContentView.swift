@@ -8,7 +8,6 @@ struct ContentView: View {
     @State private var showDimensions: Bool = true
     @State private var projectName: String = "Blueprint Studio Pro"
 
-    // Menu categories
     enum Category: String, CaseIterable, Identifiable {
         case edit = "Edit"
         case build = "Build"
@@ -27,8 +26,6 @@ struct ContentView: View {
     // UI state
     @State private var showRenameAlert: Bool = false
     @State private var pendingProjectName: String = ""
-
-    // Confirmations
     @State private var confirmNewProject: Bool = false
 
     var body: some View {
@@ -54,24 +51,54 @@ struct ContentView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
 
-                // Tools by category
+                // Tools by category — visible with disabled states
                 HStack(spacing: 12) {
                     switch category {
                     case .edit:
-                        ToolButton(tool: .select, selectedTool: $selectedTool, systemName: "cursorarrow")
-                        if floorPlan.selectedRoomID != nil {
-                            ToolButton(tool: .resize, selectedTool: $selectedTool, systemName: "square.and.pencil.circle")
-                        }
-                        ToolButton(tool: .delete, selectedTool: $selectedTool, systemName: "trash")
+                        ToolButton(tool: .select,
+                                   selectedTool: $selectedTool,
+                                   systemName: "cursorarrow",
+                                   enabled: true)
+
+                        ToolButton(tool: .resize,
+                                   selectedTool: $selectedTool,
+                                   systemName: "square.and.pencil.circle",
+                                   enabled: floorPlan.selectedRoomID != nil)
+
+                        ToolButton(tool: .delete,
+                                   selectedTool: $selectedTool,
+                                   systemName: "trash",
+                                   enabled: floorPlan.selectedRoomID != nil)
+
                         Spacer()
+
                     case .build:
-                        ToolButton(tool: .drawRoom, selectedTool: $selectedTool, systemName: "square.dashed")
-                        ToolButton(tool: .drawWall, selectedTool: $selectedTool, systemName: "scribble")
+                        ToolButton(tool: .drawRoom,
+                                   selectedTool: $selectedTool,
+                                   systemName: "square.dashed",
+                                   enabled: true)
+
+                        ToolButton(tool: .drawWall,
+                                   selectedTool: $selectedTool,
+                                   systemName: "scribble",
+                                   enabled: true)
+
                         Spacer()
+
                     case .openings:
-                        ToolButton(tool: .addWindow, selectedTool: $selectedTool, systemName: "rectangle.split.2x1")
-                        ToolButton(tool: .addDoor, selectedTool: $selectedTool, systemName: "door.left.hand.open")
+                        let hasAnyRoom = !floorPlan.rooms.isEmpty
+                        ToolButton(tool: .addWindow,
+                                   selectedTool: $selectedTool,
+                                   systemName: "rectangle.split.2x1",
+                                   enabled: hasAnyRoom)
+
+                        ToolButton(tool: .addDoor,
+                                   selectedTool: $selectedTool,
+                                   systemName: "door.left.hand.open",
+                                   enabled: hasAnyRoom)
+
                         Spacer()
+
                     case .view:
                         HStack(spacing: 10) {
                             ToggleChip(
@@ -146,7 +173,7 @@ struct ContentView: View {
         }
         // TOP OVERLAYS
         .overlay(
-            // Left: branding pill -> now a Menu (Project)
+            // Left: branding pill -> Project menu (with chevron)
             HStack {
                 Menu {
                     Section("Project") {
@@ -177,20 +204,21 @@ struct ContentView: View {
                         } label: {
                             Label("Rename Project", systemImage: "pencil")
                         }
-                        // Placeholder for future app-wide settings
                         Button {
-                            // Add settings view if/when needed
+                            // Placeholder for Settings view
                         } label: {
                             Label("Settings", systemImage: "gearshape")
                         }
                     }
                 } label: {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
                         Image(systemName: "house.lodge")
                         Text(projectName)
                             .fontWeight(.semibold)
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
+                        Image(systemName: "chevron.down") // <— chevron to indicate menu
+                            .font(.footnote)
                     }
                     .font(.system(.headline, design: .rounded))
                     .padding(.horizontal, 12).padding(.vertical, 8)
@@ -203,7 +231,7 @@ struct ContentView: View {
             alignment: .topLeading
         )
         .overlay(
-            // Right: Floor menu pill — shows only current floor name (short)
+            // Right: Floor menu pill — current floor only
             HStack {
                 Spacer()
                 Menu {
@@ -297,12 +325,17 @@ private struct ToolButton: View {
     let tool: Tool
     @Binding var selectedTool: Tool
     let systemName: String
+    var enabled: Bool = true
 
     var body: some View {
-        Button { selectedTool = tool } label: {
+        Button {
+            if enabled { selectedTool = tool }
+        } label: {
             VStack(spacing: 4) {
-                Image(systemName: systemName).imageScale(.large)
-                Text(tool.rawValue).font(.system(size: 11, weight: .semibold))
+                Image(systemName: systemName)
+                    .imageScale(.large)
+                Text(tool.rawValue)
+                    .font(.system(size: 11, weight: .semibold))
             }
             .padding(.vertical, 6)
             .padding(.horizontal, 10)
@@ -313,8 +346,11 @@ private struct ToolButton: View {
                     .stroke(selectedTool == tool ? Color.accentColor.opacity(0.6) : Color.gray.opacity(0.25), lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .opacity(enabled ? 1.0 : 0.45)
         }
         .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityAddTraits(enabled ? [] : .isDisabled)
     }
 }
 
@@ -366,39 +402,14 @@ private struct ToggleChip: View {
     ContentView().environmentObject(FloorPlan())
 }
 
-// MARK: - Lightweight, safe reset without touching your model files
+// MARK: - Lightweight reset helper
 extension FloorPlan {
-    /// Clears the current plan to a single empty "Ground Floor".
-    /// Tries to do so using public surface available in prior code.
     func resetProject() {
-        // If your model exposes floors directly, reset them; otherwise fall back to clearing rooms.
-        if var floorsMirror = try? Self._accessFloors(self) {
-            floorsMirror.removeAll()
-            floorsMirror.append(Floor(name: "Ground Floor"))
-            Self._assignFloors(self, floorsMirror)
-            self.switchToFloor(self.floors.first?.id ?? self.floors[0].id)
-        } else {
-            // Fallback: delete rooms on the current floor if floors are not directly writable
-            // (FloorPlanView reads `rooms` for the active floor)
-            while self.floors.count > 1 { self.deleteCurrentFloor() }
-            // ensure empty current
-            if !self.rooms.isEmpty {
-                self.rooms.removeAll()
-            }
+        if floors.count > 1 {
+            while floors.count > 1 { deleteCurrentFloor() }
         }
-        self.selectedRoomID = nil
-        self.selectedWallIndex = nil
-        // Clear undo stack if your model exposes it; otherwise ignore.
-    }
-
-    // MARK: - Reflection bridges (no-ops if inaccessible). These helpers try to avoid editing your model file.
-    private static func _accessFloors(_ obj: FloorPlan) throws -> [Floor] {
-        // If FloorPlan exposes `floors` as a mutable var, this will compile and work.
-        return obj.floors
-    }
-    private static func _assignFloors(_ obj: FloorPlan, _ newFloors: [Floor]) {
-        // If `floors` is a mutable var, this will compile and work.
-        obj.floors = newFloors
-        obj.currentFloorIndex = 0
+        rooms.removeAll()
+        selectedRoomID = nil
+        selectedWallIndex = nil
     }
 }
