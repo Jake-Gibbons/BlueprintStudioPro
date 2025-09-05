@@ -17,31 +17,27 @@ struct ContentView: View {
     }
     @State private var category: Category = .edit
 
-    // Export / Share
     @State private var isExporting: Bool = false
     @State private var exportDoc = FloorPlanDocument(data: Data())
     @State private var showShare: Bool = false
     @State private var shareURL: URL?
 
-    // UI state
     @State private var showRenameAlert: Bool = false
     @State private var pendingProjectName: String = ""
+
     @State private var confirmNewProject: Bool = false
 
     var body: some View {
         ZStack {
-            // Canvas
             FloorPlanView(currentTool: $selectedTool,
                           snapToGrid: $snapToGrid,
                           showDimensions: $showDimensions)
                 .environmentObject(floorPlan)
                 .edgesIgnoringSafeArea(.all)
 
-            // Overlay UI
             VStack(spacing: 0) {
                 Spacer()
 
-                // Category selector
                 Picker("Category", selection: $category) {
                     ForEach(Category.allCases) { cat in
                         Text(cat.rawValue).tag(cat)
@@ -51,68 +47,34 @@ struct ContentView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
 
-                // Tools by category — visible with disabled states
                 HStack(spacing: 12) {
                     switch category {
                     case .edit:
-                        ToolButton(tool: .select,
-                                   selectedTool: $selectedTool,
-                                   systemName: "cursorarrow",
-                                   enabled: true)
-
-                        ToolButton(tool: .resize,
-                                   selectedTool: $selectedTool,
-                                   systemName: "square.and.pencil.circle",
+                        ToolButton(tool: .select, selectedTool: $selectedTool, systemName: "cursorarrow")
+                        ToolButton(tool: .resize, selectedTool: $selectedTool, systemName: "square.and.pencil.circle",
                                    enabled: floorPlan.selectedRoomID != nil)
-
-                        ToolButton(tool: .delete,
-                                   selectedTool: $selectedTool,
-                                   systemName: "trash",
+                        ToolButton(tool: .delete, selectedTool: $selectedTool, systemName: "trash",
                                    enabled: floorPlan.selectedRoomID != nil)
-
                         Spacer()
-
                     case .build:
-                        ToolButton(tool: .drawRoom,
-                                   selectedTool: $selectedTool,
-                                   systemName: "square.dashed",
-                                   enabled: true)
-
-                        ToolButton(tool: .drawWall,
-                                   selectedTool: $selectedTool,
-                                   systemName: "scribble",
-                                   enabled: true)
-
+                        ToolButton(tool: .drawRoom, selectedTool: $selectedTool, systemName: "square.dashed")
+                        ToolButton(tool: .drawWall, selectedTool: $selectedTool, systemName: "scribble")
                         Spacer()
-
                     case .openings:
                         let hasAnyRoom = !floorPlan.rooms.isEmpty
-                        ToolButton(tool: .addWindow,
-                                   selectedTool: $selectedTool,
-                                   systemName: "rectangle.split.2x1",
-                                   enabled: hasAnyRoom)
-
-                        ToolButton(tool: .addDoor,
-                                   selectedTool: $selectedTool,
-                                   systemName: "door.left.hand.open",
-                                   enabled: hasAnyRoom)
-
+                        ToolButton(tool: .addWindow, selectedTool: $selectedTool, systemName: "rectangle.split.2x1", enabled: hasAnyRoom)
+                        ToolButton(tool: .addDoor, selectedTool: $selectedTool, systemName: "door.left.hand.open", enabled: hasAnyRoom)
                         Spacer()
-
                     case .view:
                         HStack(spacing: 10) {
-                            ToggleChip(
-                                isOn: $snapToGrid,
-                                label: "Snap to Grid",
-                                onIcon: "square.grid.3x3.fill",
-                                offIcon: "square.grid.3x3"
-                            )
-                            ToggleChip(
-                                isOn: $showDimensions,
-                                label: "Dimensions",
-                                onIcon: "ruler.fill",
-                                offIcon: "ruler"
-                            )
+                            ToggleChip(isOn: $snapToGrid,
+                                       label: "Snap to Grid",
+                                       onIcon: "square.grid.3x3.fill",
+                                       offIcon: "square.grid.3x3")
+                            ToggleChip(isOn: $showDimensions,
+                                       label: "Dimensions",
+                                       onIcon: "ruler.fill",
+                                       offIcon: "ruler")
                         }
                         Spacer()
                     }
@@ -129,31 +91,21 @@ struct ContentView: View {
 
                 // Utility bar (full-width, thin)
                 HStack(spacing: 10) {
-                    IconBarButton(systemName: "arrow.uturn.backward", enabled: true, fg: .white, bg: Color.white.opacity(0.08), outline: .white.opacity(0.2)) {
-                        floorPlan.undo()
-                    }
-                    IconBarButton(systemName: "arrow.uturn.forward", enabled: true, fg: .white, bg: Color.white.opacity(0.08), outline: .white.opacity(0.2)) {
-                        floorPlan.redo()
-                    }
+                    IconBarButton(systemName: "arrow.uturn.backward", enabled: true) { floorPlan.undo() }
+                    IconBarButton(systemName: "arrow.uturn.forward", enabled: true) { floorPlan.redo() }
 
                     let hasSelection = (floorPlan.selectedRoomID != nil)
-                    IconBarButton(
-                        systemName: "trash",
-                        enabled: hasSelection,
-                        fg: hasSelection ? .red : .gray,
-                        bg: hasSelection ? Color.red.opacity(0.12) : Color.white.opacity(0.08),
-                        outline: .white.opacity(0.2)
-                    ) {
-                        floorPlan.deleteSelectedRoom()
-                    }
+                    IconBarButton(systemName: "trash",
+                                  enabled: hasSelection,
+                                  isDestructive: true) { floorPlan.deleteSelectedRoom() }
 
-                    IconBarButton(systemName: "square.and.arrow.up", enabled: true, fg: .white, bg: Color.white.opacity(0.08), outline: .white.opacity(0.2)) {
+                    IconBarButton(systemName: "square.and.arrow.up", enabled: true) {
                         if let url = makeTemporaryExportFile() {
                             shareURL = url
                             showShare = true
                         }
                     }
-                    IconBarButton(systemName: "square.and.arrow.down.on.square", enabled: true, fg: .white, bg: Color.white.opacity(0.08), outline: .white.opacity(0.2)) {
+                    IconBarButton(systemName: "square.and.arrow.down.on.square", enabled: true) {
                         exportDoc = FloorPlanDocument(data: floorPlan.exportData())
                         isExporting = true
                     }
@@ -162,18 +114,11 @@ struct ContentView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(Color.black.opacity(0.5))
-                .overlay(
-                    Rectangle()
-                        .fill(Color.white.opacity(0.08))
-                        .frame(height: 0.5)
-                        .frame(maxHeight: .infinity, alignment: .top),
-                    alignment: .top
-                )
             }
         }
-        // TOP OVERLAYS
+        // MARK: - Top overlays
         .overlay(
-            // Left: branding pill -> Project menu (with chevron)
+            // Left: branding pill -> Project menu with chevron
             HStack {
                 Menu {
                     Section("Project") {
@@ -205,7 +150,7 @@ struct ContentView: View {
                             Label("Rename Project", systemImage: "pencil")
                         }
                         Button {
-                            // Placeholder for Settings view
+                            // Future Settings
                         } label: {
                             Label("Settings", systemImage: "gearshape")
                         }
@@ -217,21 +162,20 @@ struct ContentView: View {
                             .fontWeight(.semibold)
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
-                        Image(systemName: "chevron.down") // <— chevron to indicate menu
+                        Image(systemName: "chevron.down")
                             .font(.footnote)
                     }
                     .font(.system(.headline, design: .rounded))
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .background(.ultraThinMaterial, in: Capsule())
                 }
-
                 Spacer()
             }
             .padding([.top, .leading], 16),
             alignment: .topLeading
         )
         .overlay(
-            // Right: Floor menu pill — current floor only
+            // Right: Floor menu pill — just the floor label
             HStack {
                 Spacer()
                 Menu {
@@ -282,14 +226,13 @@ struct ContentView: View {
             .padding([.top, .trailing], 16),
             alignment: .topTrailing
         )
-        // Exporter & Share sheet
+        // MARK: - Export / Share / Alerts
         .fileExporter(isPresented: $isExporting, document: exportDoc, contentType: .json, defaultFilename: "floorplan.json") { _ in }
         .sheet(isPresented: $showShare) {
             if let url = shareURL {
                 ShareSheet(activityItems: [url]).ignoresSafeArea()
             }
         }
-        // Rename project
         .alert("Rename Project", isPresented: $showRenameAlert) {
             TextField("Project name", text: $pendingProjectName)
             Button("Cancel", role: .cancel) { }
@@ -297,19 +240,17 @@ struct ContentView: View {
         } message: {
             Text("Enter a name for this project.")
         }
-        // Confirm new project
         .confirmationDialog("Start a new project? The current plan will be cleared.",
                             isPresented: $confirmNewProject,
                             titleVisibility: .visible) {
             Button("Start New Project", role: .destructive) {
-                floorPlan.resetProject()
+                floorPlan.resetProject()               // ✅ Now defined on the model
                 projectName = "Untitled Project"
             }
             Button("Cancel", role: .cancel) { }
         }
     }
 
-    // MARK: - Helpers
     private func makeTemporaryExportFile() -> URL? {
         let data = floorPlan.exportData()
         let url = FileManager.default.temporaryDirectory
@@ -332,10 +273,8 @@ private struct ToolButton: View {
             if enabled { selectedTool = tool }
         } label: {
             VStack(spacing: 4) {
-                Image(systemName: systemName)
-                    .imageScale(.large)
-                Text(tool.rawValue)
-                    .font(.system(size: 11, weight: .semibold))
+                Image(systemName: systemName).imageScale(.large)
+                Text(tool.rawValue).font(.system(size: 11, weight: .semibold))
             }
             .padding(.vertical, 6)
             .padding(.horizontal, 10)
@@ -350,16 +289,13 @@ private struct ToolButton: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
-        .accessibilityAddTraits(enabled ? [] : .isDisabled)
     }
 }
 
 private struct IconBarButton: View {
     let systemName: String
     let enabled: Bool
-    let fg: Color
-    let bg: Color
-    let outline: Color
+    var isDestructive: Bool = false
     let action: () -> Void
 
     var body: some View {
@@ -367,14 +303,20 @@ private struct IconBarButton: View {
             Image(systemName: systemName)
                 .font(.system(size: 18, weight: .semibold))
                 .imageScale(.large)
-                .foregroundStyle(fg.opacity(enabled ? 1 : 0.6))
+                .foregroundStyle(isDestructive ? (enabled ? .red : .gray) : .white.opacity(enabled ? 1 : 0.6))
                 .padding(8)
-                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(bg))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(outline, lineWidth: 1))
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(isDestructive && enabled ? Color.red.opacity(0.12) : Color.white.opacity(0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                )
         }
         .disabled(!enabled)
         .buttonStyle(.plain)
-        .accessibilityLabel(systemName)
+        .accessibilityHidden(!enabled)
     }
 }
 
@@ -385,9 +327,7 @@ private struct ToggleChip: View {
     var offIcon: String
 
     var body: some View {
-        Button {
-            isOn.toggle()
-        } label: {
+        Button { isOn.toggle() } label: {
             Label(label, systemImage: isOn ? onIcon : offIcon)
                 .font(.system(size: 14, weight: .semibold))
                 .padding(.vertical, 8)
@@ -400,16 +340,4 @@ private struct ToggleChip: View {
 
 #Preview {
     ContentView().environmentObject(FloorPlan())
-}
-
-// MARK: - Lightweight reset helper
-extension FloorPlan {
-    func resetProject() {
-        if floors.count > 1 {
-            while floors.count > 1 { deleteCurrentFloor() }
-        }
-        rooms.removeAll()
-        selectedRoomID = nil
-        selectedWallIndex = nil
-    }
 }
