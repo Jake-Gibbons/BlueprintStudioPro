@@ -1,8 +1,7 @@
 import SwiftUI
 import Combine
 
-// MARK: - Floor / Room Models (abbreviated to the essentials used here)
-// NOTE: Keep your existing properties & methods; this file shows the full type with the new resetProject().
+// MARK: - Core Models
 
 struct Floor: Identifiable, Equatable {
     let id: UUID
@@ -16,31 +15,29 @@ struct Floor: Identifiable, Equatable {
     }
 }
 
-struct Window: Identifiable {
-    let id = UUID()
-    var wallIndex: Int
-    var offset: CGFloat    // 0...1 along the wall
-    var length: CGFloat    // in model units (m)
+protocol WallAttachment {
+    var wallIndex: Int { get set }   // wall index in room polygon
+    var offset: CGFloat { get set }  // 0...1 along wall
+    var length: CGFloat { get set }  // meters
 }
 
-struct Door: Identifiable {
+struct Window: Identifiable, WallAttachment {
     let id = UUID()
     var wallIndex: Int
     var offset: CGFloat
     var length: CGFloat
 }
 
-protocol WallAttachment {
-    var wallIndex: Int { get set }
-    var offset: CGFloat { get set }
-    var length: CGFloat { get set }
+struct Door: Identifiable, WallAttachment {
+    let id = UUID()
+    var wallIndex: Int
+    var offset: CGFloat
+    var length: CGFloat
 }
-extension Window: WallAttachment {}
-extension Door: WallAttachment {}
 
-struct Room: Identifiable, Hashable {
+struct Room: Identifiable {
     let id: UUID
-    var vertices: [CGPoint]
+    var vertices: [CGPoint]     // in meters (model space)
     var windows: [Window] = []
     var doors: [Door] = []
     var fillColor: Color = Color.blue.opacity(0.06)
@@ -50,7 +47,7 @@ struct Room: Identifiable, Hashable {
         self.vertices = vertices
     }
 
-    // Simple point-in-polygon hit
+    // Simple point-in-polygon
     func contains(point: CGPoint) -> Bool {
         guard vertices.count >= 3 else { return false }
         var inside = false
@@ -83,13 +80,22 @@ struct Room: Identifiable, Hashable {
         var path = Path()
         guard let first = vertices.first else { return path }
         path.move(to: transform(first))
-        for v in vertices.dropFirst() { path.addLine(to: transform(v)) }
+        for v in vertices.dropFirst() { path.addLine(to: v) }
         path.closeSubpath()
         return path
     }
 }
 
-// Utility
+// Custom Equatable/Hashable for Room based on id only (avoids Color/attachment issues)
+extension Room: Equatable {
+    static func == (lhs: Room, rhs: Room) -> Bool { lhs.id == rhs.id }
+}
+extension Room: Hashable {
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+// MARK: - Geometry utility
+
 fileprivate func distancePointToSegment(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
     let ax = b.x - a.x, ay = b.y - a.y
     let denom = ax*ax + ay*ay
@@ -99,9 +105,22 @@ fileprivate func distancePointToSegment(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint
     return hypot(p.x - proj.x, p.y - proj.y)
 }
 
-// MARK: - FloorPlan
+// MARK: - Editor Tools
 
-final class FloorPlan: ObservableObject {
+enum EditorTool: String, CaseIterable, Identifiable {
+    case select = "Select"
+    case delete = "Delete"
+    case drawWall = "Draw Wall"
+    case drawRoom = "Draw Room"
+    case addWindow = "Window"
+    case addDoor = "Door"
+    case resize = "Resize"
+    var id: String { rawValue }
+}
+
+// MARK: - Floorplan (ObservableObject)
+
+final class Floorplan: ObservableObject {
 
     // Floors
     @Published var floors: [Floor] = [Floor(name: "Ground Floor")]
@@ -147,7 +166,6 @@ final class FloorPlan: ObservableObject {
         }
     }
 
-    // ✅ New: reset project (clears extra floors and rooms on current floor)
     func resetProject() {
         saveToHistory()
         floors = [Floor(name: "Ground Floor")]
@@ -164,7 +182,7 @@ final class FloorPlan: ObservableObject {
     }
 
     func selectRoom(containing point: CGPoint) {
-        for r in rooms.reversed() { // prefer top-most
+        for r in rooms.reversed() {
             if r.contains(point: point) {
                 selectedRoomID = r.id
                 return
@@ -232,7 +250,6 @@ final class FloorPlan: ObservableObject {
 
     // MARK: - Export
     func exportData() -> Data {
-        // Simple JSON of vertices (replace with your real encoder if you have one)
         struct EncodedFloor: Codable { var id: UUID; var name: String; var rooms: [[CGPoint]] }
         let payload = floors.map { EncodedFloor(id: $0.id, name: $0.name, rooms: $0.rooms.map { $0.vertices }) }
         let encoder = JSONEncoder()
@@ -240,3 +257,4 @@ final class FloorPlan: ObservableObject {
         return (try? encoder.encode(payload)) ?? Data()
     }
 }
+

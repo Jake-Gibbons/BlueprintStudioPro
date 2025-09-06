@@ -2,7 +2,7 @@ import SwiftUI
 
 @main
 struct BlueprintStudioProApp: App {
-    @StateObject private var floorPlan = FloorPlan()
+    @StateObject private var floorPlan = Floorplan()
     
     var body: some Scene {
         WindowGroup {

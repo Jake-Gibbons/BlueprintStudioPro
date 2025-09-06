@@ -26,25 +26,48 @@ fileprivate func hardSnapPoint(_ p: CGPoint, step: CGFloat = GRID_STEP) -> CGPoi
             y: round(p.y / step) * step)
 }
 
-/// Primary canvas for editing floor plans.
+fileprivate func snappedDeltaForRoomMove(dx: CGFloat,
+                                         dy: CGFloat,
+                                         currentVertices: [CGPoint],
+                                         step: CGFloat = GRID_STEP,
+                                         tol: CGFloat = SNAP_TOLERANCE) -> (CGFloat, CGFloat) {
+    var bestDx = dx, bestDy = dy
+    var bestAbsX: CGFloat = .infinity
+    for v in currentVertices {
+        let xAfter = v.x + dx
+        let targetX = round(xAfter / step) * step
+        let corr = targetX - xAfter
+        if abs(corr) <= tol, abs(corr) < bestAbsX {
+            bestAbsX = abs(corr); bestDx = dx + corr
+        }
+    }
+    var bestAbsY: CGFloat = .infinity
+    for v in currentVertices {
+        let yAfter = v.y + dy
+        let targetY = round(yAfter / step) * step
+        let corr = targetY - yAfter
+        if abs(corr) <= tol, abs(corr) < bestAbsY {
+            bestAbsY = abs(corr); bestDy = dy + corr
+        }
+    }
+    return (bestDx, bestDy)
+}
+
+// MARK: - Canvas
+
 struct FloorPlanView: View {
-    @EnvironmentObject private var floorPlan: FloorPlan
-    @Binding var currentTool: Tool
+    @EnvironmentObject private var floorPlan: Floorplan
+    @Binding var currentTool: EditorTool
     @Binding var snapToGrid: Bool
     @Binding var showDimensions: Bool
 
-    // Working polygon (Draw Wall tool)
     @State private var workingVertices: [CGPoint] = []
 
-    // Pan/zoom state
+    // Pan/zoom
     @State private var panOffset: CGSize = .zero
     @State private var liveTwoFingerPan: CGSize = .zero
     @State private var scale: CGFloat = 60.0
     @GestureState private var gestureScale: CGFloat = 1.0
-
-    // Move room
-    @State private var roomDragTranslation: CGSize = .zero
-    @State private var isDraggingRoom: Bool = false
 
     // Draw-room rubber-band
     @State private var drawRoomStart: CGPoint? = nil
@@ -53,12 +76,6 @@ struct FloorPlanView: View {
     // Live opening preview
     struct PreviewOpening { var roomID: UUID; var wallIndex: Int; var offset: CGFloat; var isDoor: Bool }
     @State private var previewOpening: PreviewOpening? = nil
-
-    // Editable dimension tag
-    @State private var editingDimension: (roomID: UUID, wallIndex: Int)? = nil
-    @State private var editingText: String = ""
-
-    private let unitLabel = "m"
 
     var body: some View {
         GeometryReader { geometry in
@@ -75,19 +92,15 @@ struct FloorPlanView: View {
                     let isSelected = room.id == floorPlan.selectedRoomID
                     let isResizeMode = (currentTool == .resize && isSelected)
 
-                    // Render
                     RoomRender(
                         room: room,
                         isSelected: isSelected,
                         isResizeMode: isResizeMode,
                         transform: { modelToScreen($0, size: geometry.size, scale: effectiveScale, offset: effectiveOffset) }
                     )
-                    .gesture(
-                        TapGesture().onEnded { handleTapOnRoom(room: room) }
-                    )
+                    .gesture(TapGesture().onEnded { handleTapOnRoom(room: room) })
 
-                    // --- MOVE CAPTURE LAYER (fixes movement reliability) ---
-                    // Transparent fill of the room shape that owns the move drag.
+                    // Move capture layer (select tool) — removed internal state here to keep this file slim
                     RoomMoveCapture(
                         room: room,
                         isActive: currentTool == .select && isSelected,
@@ -97,176 +110,17 @@ struct FloorPlanView: View {
                         onHistory: { floorPlan.saveToHistory() }
                     )
 
-                    // WINDOWS
-                    ForEach(room.windows) { window in
-                        let sidx = window.wallIndex % room.vertices.count
-                        let eidx = (window.wallIndex + 1) % room.vertices.count
-                        let start = room.vertices[sidx], end = room.vertices[eidx]
-                        let (p1, p2) = openingPoints(start: start, end: end, attachment: window)
-                        let s1 = modelToScreen(p1, size: geometry.size, scale: effectiveScale, offset: effectiveOffset)
-                        let s2 = modelToScreen(p2, size: geometry.size, scale: effectiveScale, offset: effectiveOffset)
+                    // Windows & Doors
+                    openings(for: room, size: geometry.size, effectiveScale: effectiveScale, effectiveOffset: effectiveOffset)
 
-                        Path { $0.move(to: s1); $0.addLine(to: s2) }
-                            .stroke(Color.teal.opacity(0.7), lineWidth: 3)
-                            .overlay(
-                                Path { $0.move(to: s1); $0.addLine(to: s2) }
-                                    .stroke(Color.clear, lineWidth: 28)
-                                    .contentShape(Rectangle())
-                                    .gesture(
-                                        DragGesture()
-                                            .onChanged { value in
-                                                let mt = CGPoint(x: value.translation.width / effectiveScale, y: value.translation.height / effectiveScale)
-                                                let wdx = end.x - start.x, wdy = end.y - start.y
-                                                let wallLen = hypot(wdx, wdy); guard wallLen > 0 else { return }
-                                                let unit = CGPoint(x: wdx / wallLen, y: wdy / wallLen)
-                                                let delta = mt.x * unit.x + mt.y * unit.y
-                                                if let rIdx = floorPlan.rooms.firstIndex(where: { $0.id == room.id }),
-                                                   let wIdx = floorPlan.rooms[rIdx].windows.firstIndex(where: { $0.id == window.id }) {
-                                                    var r = floorPlan.rooms[rIdx]
-                                                    var w = r.windows[wIdx]
-                                                    w.offset = min(max(w.offset + (delta / wallLen), 0), 1)
-                                                    r.windows[wIdx] = w
-                                                    floorPlan.rooms[rIdx] = r
-                                                }
-                                            }
-                                            .onEnded { _ in floorPlan.saveToHistory() }
-                                    )
-                            )
-                    }
-
-                    // DOORS
-                    ForEach(room.doors) { door in
-                        let sidx = door.wallIndex % room.vertices.count
-                        let eidx = (door.wallIndex + 1) % room.vertices.count
-                        let start = room.vertices[sidx], end = room.vertices[eidx]
-                        let (p1, p2) = openingPoints(start: start, end: end, attachment: door)
-                        let s1 = modelToScreen(p1, size: geometry.size, scale: effectiveScale, offset: effectiveOffset)
-                        let s2 = modelToScreen(p2, size: geometry.size, scale: effectiveScale, offset: effectiveOffset)
-
-                        Path { $0.move(to: s1); $0.addLine(to: s2) }
-                            .stroke(Color.brown.opacity(0.7), lineWidth: 5)
-                            .overlay(
-                                Path { $0.move(to: s1); $0.addLine(to: s2) }
-                                    .stroke(Color.clear, lineWidth: 36)
-                                    .contentShape(Rectangle())
-                                    .gesture(
-                                        DragGesture()
-                                            .onChanged { value in
-                                                let mt = CGPoint(x: value.translation.width / effectiveScale, y: value.translation.height / effectiveScale)
-                                                let wdx = end.x - start.x, wdy = end.y - start.y
-                                                let wallLen = hypot(wdx, wdy); guard wallLen > 0 else { return }
-                                                let unit = CGPoint(x: wdx / wallLen, y: wdy / wallLen)
-                                                let delta = mt.x * unit.x + mt.y * unit.y
-                                                if let rIdx = floorPlan.rooms.firstIndex(where: { $0.id == room.id }),
-                                                   let dIdx = floorPlan.rooms[rIdx].doors.firstIndex(where: { $0.id == door.id }) {
-                                                    var r = floorPlan.rooms[rIdx]
-                                                    var d = r.doors[dIdx]
-                                                    d.offset = min(max(d.offset + (delta / wallLen), 0), 1)
-                                                    r.doors[dIdx] = d
-                                                    floorPlan.rooms[rIdx] = r
-                                                }
-                                            }
-                                            .onEnded { _ in floorPlan.saveToHistory() }
-                                    )
-                            )
-                    }
-
-                    // === RESIZE MODE visuals (all walls + handles) ===
+                    // Resize overlays or single-wall overlay
                     if isResizeMode {
-                        let count = room.vertices.count
-                        ForEach(0..<count, id: \.self) { wall in
-                            let v1 = room.vertices[wall]
-                            let v2 = room.vertices[(wall + 1) % count]
-
-                            Path { path in
-                                let sStart = modelToScreen(v1, size: geometry.size, scale: effectiveScale, offset: effectiveOffset)
-                                let sEnd = modelToScreen(v2, size: geometry.size, scale: effectiveScale, offset: effectiveOffset)
-                                path.move(to: sStart); path.addLine(to: sEnd)
-                            }
-                            .stroke(Color.orange.opacity(0.9), lineWidth: 4)
-
-                            WallHitRail(
-                                roomID: room.id,
-                                wallIndex: wall,
-                                v1: v1, v2: v2,
-                                effectiveScale: effectiveScale,
-                                snapToGrid: snapToGrid,
-                                getRoom: { bindingForRoom(id: $0) },
-                                onCommit: { floorPlan.saveToHistory() }
-                            )
-                            .allowsHitTesting(true)
-
-                            let dx = v2.x - v1.x, dy = v2.y - v1.y
-                            let len = hypot(dx, dy)
-                            if len > 0 {
-                                let mid = CGPoint(x: (v1.x + v2.x)/2, y: (v1.y + v2.y)/2)
-                                let unitNormal = CGPoint(x: -dy / len, y: dx / len)
-                                let offsetModel = 16.0 / effectiveScale
-                                let handleModelPos = CGPoint(x: mid.x + unitNormal.x * offsetModel, y: mid.y + unitNormal.y * offsetModel)
-                                let handleScreen = modelToScreen(handleModelPos, size: geometry.size, scale: effectiveScale, offset: effectiveOffset)
-
-                                WallHandle(
-                                    roomID: room.id,
-                                    wallIndex: wall,
-                                    v1: v1, v2: v2,
-                                    centerScreen: handleScreen,
-                                    effectiveScale: effectiveScale,
-                                    snapToGrid: snapToGrid,
-                                    getRoom: { bindingForRoom(id: $0) },
-                                    onCommit: { floorPlan.saveToHistory() }
-                                )
-                                .allowsHitTesting(true)
-                            }
-                        }
-                    }
-                    // === Single-wall selection visuals (bring back the handle) ===
-                    else if let selectedID = floorPlan.selectedRoomID,
-                            selectedID == room.id,
-                            let wall = floorPlan.selectedWallIndex,
-                            room.vertices.indices.contains(wall) {
-
-                        let v1 = room.vertices[wall], v2 = room.vertices[(wall + 1) % room.vertices.count]
-
-                        Path { path in
-                            let sStart = modelToScreen(v1, size: geometry.size, scale: effectiveScale, offset: effectiveOffset)
-                            let sEnd = modelToScreen(v2, size: geometry.size, scale: effectiveScale, offset: effectiveOffset)
-                            path.move(to: sStart); path.addLine(to: sEnd)
-                        }
-                        .stroke(Color.orange.opacity(0.9), lineWidth: 4)
-
-                        WallHitRail(
-                            roomID: room.id,
-                            wallIndex: wall,
-                            v1: v1, v2: v2,
-                            effectiveScale: effectiveScale,
-                            snapToGrid: snapToGrid,
-                            getRoom: { bindingForRoom(id: $0) },
-                            onCommit: { floorPlan.saveToHistory() }
-                        )
-                        .allowsHitTesting(true)
-
-                        // Visible handle (it had disappeared; restored here)
-                        let dx = v2.x - v1.x, dy = v2.y - v1.y
-                        let len = hypot(dx, dy)
-                        if len > 0 {
-                            let mid = CGPoint(x: (v1.x + v2.x)/2, y: (v1.y + v2.y)/2)
-                            let unitNormal = CGPoint(x: -dy / len, y: dx / len)
-                            let offsetModel = 16.0 / effectiveScale
-                            let handleModelPos = CGPoint(x: mid.x + unitNormal.x * offsetModel, y: mid.y + unitNormal.y * offsetModel)
-                            let handleScreen = modelToScreen(handleModelPos, size: geometry.size, scale: effectiveScale, offset: effectiveOffset)
-
-                            WallHandle(
-                                roomID: room.id,
-                                wallIndex: wall,
-                                v1: v1, v2: v2,
-                                centerScreen: handleScreen,
-                                effectiveScale: effectiveScale,
-                                snapToGrid: snapToGrid,
-                                getRoom: { bindingForRoom(id: $0) },
-                                onCommit: { floorPlan.saveToHistory() }
-                            )
-                            .allowsHitTesting(true)
-                        }
+                        resizeOverlays(for: room, size: geometry.size, effectiveScale: effectiveScale, effectiveOffset: effectiveOffset)
+                    } else if let selectedID = floorPlan.selectedRoomID,
+                              selectedID == room.id,
+                              let wall = floorPlan.selectedWallIndex,
+                              room.vertices.indices.contains(wall) {
+                        singleWallOverlay(room: room, wall: wall, size: geometry.size, effectiveScale: effectiveScale, effectiveOffset: effectiveOffset)
                     }
 
                     // Dimensions
@@ -276,21 +130,10 @@ struct FloorPlanView: View {
                     }
                 }
 
-                // Live opening preview
-                if let preview = previewOpening,
-                   let room = floorPlan.rooms.first(where: { $0.id == preview.roomID }) {
-                    let start = room.vertices[preview.wallIndex]
-                    let end = room.vertices[(preview.wallIndex + 1) % room.vertices.count]
-                    let ghost = Window(wallIndex: preview.wallIndex, offset: preview.offset, length: preview.isDoor ? 0.9 : 1.0)
-                    let (p1, p2) = openingPoints(start: start, end: end, attachment: ghost)
-                    let s1 = modelToScreen(p1, size: geometry.size, scale: effectiveScale, offset: effectiveOffset)
-                    let s2 = modelToScreen(p2, size: geometry.size, scale: effectiveScale, offset: effectiveOffset)
-                    Path { $0.move(to: s1); $0.addLine(to: s2) }
-                        .stroke(preview.isDoor ? Color.brown.opacity(0.6) : Color.teal.opacity(0.6),
-                                style: StrokeStyle(lineWidth: preview.isDoor ? 5 : 3, dash: [6, 4]))
-                }
+                // Live opening preview ghosts
+                openingPreviewLayer(size: geometry.size, effectiveScale: effectiveScale, effectiveOffset: effectiveOffset)
 
-                // Temp polyline when drawing custom polygon
+                // Polyline while drawing custom polygon
                 if currentTool == .drawWall && !workingVertices.isEmpty {
                     Path { path in
                         let pts = workingVertices.map { modelToScreen($0, size: geometry.size, scale: effectiveScale, offset: effectiveOffset) }
@@ -303,20 +146,17 @@ struct FloorPlanView: View {
                 if let a = drawRoomStart, let b = drawRoomCurrent, currentTool == .drawRoom {
                     let rect = normalizedRect(from: a, to: b)
                     let sRect = modelRectToScreen(rect, size: geometry.size, scale: effectiveScale, offset: effectiveOffset)
-                    Rectangle()
-                        .path(in: sRect)
+                    Rectangle().path(in: sRect)
                         .stroke(Color.accentColor.opacity(0.7), style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
                         .background(Rectangle().fill(Color.accentColor.opacity(0.05)).frame(width: sRect.width, height: sRect.height).position(x: sRect.midX, y: sRect.midY))
                 }
 
-                // Two-finger pan overlay (works; does not block single-finger)
+                // Two-finger pan overlay
                 TwoFingerPanGestureView(
                     onChanged: { translation in
-                        guard !isDraggingRoom else { return }
                         liveTwoFingerPan = translation
                     },
                     onEnded: { translation in
-                        guard !isDraggingRoom else { return }
                         panOffset.width += translation.width
                         panOffset.height += translation.height
                         liveTwoFingerPan = .zero
@@ -372,9 +212,7 @@ struct FloorPlanView: View {
                 let modelPoint = screenToModel(value.location, size: size, scale: effectiveScale, offset: offset)
 
                 switch currentTool {
-                case .select:
-                    break // move handled by RoomMoveCapture; tap handled onEnded
-                case .delete:
+                case .select, .delete, .resize:
                     break
                 case .drawRoom:
                     if drawRoomStart == nil {
@@ -406,8 +244,6 @@ struct FloorPlanView: View {
                     previewOpening = PreviewOpening(roomID: room.id, wallIndex: wallIndex, offset: clamped, isDoor: currentTool == .addDoor)
                     floorPlan.selectedRoomID = room.id
                     floorPlan.selectedWallIndex = wallIndex
-                case .resize:
-                    break
                 }
             }
             .onEnded { value in
@@ -418,7 +254,6 @@ struct FloorPlanView: View {
 
                 switch currentTool {
                 case .select:
-                    // Tap empty clears selection
                     let hitAny = floorPlan.rooms.contains { $0.contains(point: modelPoint) }
                     if !hitAny {
                         floorPlan.selectedRoomID = nil
@@ -485,10 +320,7 @@ struct FloorPlanView: View {
     }
 
     private func normalizedRect(from a: CGPoint, to b: CGPoint) -> CGRect {
-        CGRect(x: min(a.x, b.x),
-               y: min(a.y, b.y),
-               width: abs(b.x - a.x),
-               height: abs(b.y - a.y))
+        CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(b.x - a.x), height: abs(b.y - a.y))
     }
 
     private func handleTapOnRoom(room: Room) {
@@ -496,6 +328,53 @@ struct FloorPlanView: View {
         case .select, .addWindow, .addDoor, .resize:
             floorPlan.selectedRoomID = room.id
         default: break
+        }
+    }
+
+    private func openings(for room: Room, size: CGSize, effectiveScale: CGFloat, effectiveOffset: CGSize) -> some View {
+        ZStack {
+            // Windows
+            ForEach(room.windows) { window in
+                let sidx = window.wallIndex % room.vertices.count
+                let eidx = (window.wallIndex + 1) % room.vertices.count
+                let start = room.vertices[sidx], end = room.vertices[eidx]
+                let (p1, p2) = openingPoints(start: start, end: end, attachment: window)
+                let s1 = modelToScreen(p1, size: size, scale: effectiveScale, offset: effectiveOffset)
+                let s2 = modelToScreen(p2, size: size, scale: effectiveScale, offset: effectiveOffset)
+
+                Path { $0.move(to: s1); $0.addLine(to: s2) }
+                    .stroke(Color.teal.opacity(0.7), lineWidth: 3)
+            }
+
+            // Doors
+            ForEach(room.doors) { door in
+                let sidx = door.wallIndex % room.vertices.count
+                let eidx = (door.wallIndex + 1) % room.vertices.count
+                let start = room.vertices[sidx], end = room.vertices[eidx]
+                let (p1, p2) = openingPoints(start: start, end: end, attachment: door)
+                let s1 = modelToScreen(p1, size: size, scale: effectiveScale, offset: effectiveOffset)
+                let s2 = modelToScreen(p2, size: size, scale: effectiveScale, offset: effectiveOffset)
+
+                Path { $0.move(to: s1); $0.addLine(to: s2) }
+                    .stroke(Color.brown.opacity(0.7), lineWidth: 5)
+            }
+        }
+    }
+
+    private func openingPreviewLayer(size: CGSize, effectiveScale: CGFloat, effectiveOffset: CGSize) -> some View {
+        Group {
+            if let preview = previewOpening,
+               let room = floorPlan.rooms.first(where: { $0.id == preview.roomID }) {
+                let start = room.vertices[preview.wallIndex]
+                let end = room.vertices[(preview.wallIndex + 1) % room.vertices.count]
+                let ghost = Window(wallIndex: preview.wallIndex, offset: preview.offset, length: preview.isDoor ? 0.9 : 1.0)
+                let (p1, p2) = openingPoints(start: start, end: end, attachment: ghost)
+                let s1 = modelToScreen(p1, size: size, scale: effectiveScale, offset: effectiveOffset)
+                let s2 = modelToScreen(p2, size: size, scale: effectiveScale, offset: effectiveOffset)
+                Path { $0.move(to: s1); $0.addLine(to: s2) }
+                    .stroke(preview.isDoor ? Color.brown.opacity(0.6) : Color.teal.opacity(0.6),
+                            style: StrokeStyle(lineWidth: preview.isDoor ? 5 : 3, dash: [6, 4]))
+            }
         }
     }
 
@@ -518,30 +397,106 @@ struct FloorPlanView: View {
         return (px*dx + py*dy) / denom
     }
 
-    private func snappedDeltaForRoomMove(dx: CGFloat, dy: CGFloat, currentVertices: [CGPoint]) -> (CGFloat, CGFloat) {
-        var bestDx = dx, bestDy = dy
-        var bestAbsX: CGFloat = .infinity
-        for v in currentVertices {
-            let xAfter = v.x + dx
-            let targetX = round(xAfter / GRID_STEP) * GRID_STEP
-            let corr = targetX - xAfter
-            if abs(corr) <= SNAP_TOLERANCE, abs(corr) < bestAbsX {
-                bestAbsX = abs(corr); bestDx = dx + corr
+    // MARK: - Resize overlays
+
+    private func resizeOverlays(for room: Room, size: CGSize, effectiveScale: CGFloat, effectiveOffset: CGSize) -> some View {
+        let count = room.vertices.count
+        return ZStack {
+            ForEach(0..<count, id: \.self) { wall in
+                let v1 = room.vertices[wall]
+                let v2 = room.vertices[(wall + 1) % count]
+
+                Path { path in
+                    let sStart = modelToScreen(v1, size: size, scale: effectiveScale, offset: effectiveOffset)
+                    let sEnd = modelToScreen(v2, size: size, scale: effectiveScale, offset: effectiveOffset)
+                    path.move(to: sStart); path.addLine(to: sEnd)
+                }
+                .stroke(Color.orange.opacity(0.9), lineWidth: 4)
+
+                WallHitRail(
+                    roomID: room.id,
+                    wallIndex: wall,
+                    v1: v1, v2: v2,
+                    effectiveScale: effectiveScale,
+                    snapToGrid: snapToGrid,
+                    getRoom: { bindingForRoom(id: $0) },
+                    onCommit: { floorPlan.saveToHistory() }
+                )
+                .allowsHitTesting(true)
+
+                let dx = v2.x - v1.x, dy = v2.y - v1.y
+                let len = hypot(dx, dy)
+                if len > 0 {
+                    let mid = CGPoint(x: (v1.x + v2.x)/2, y: (v1.y + v2.y)/2)
+                    let unitNormal = CGPoint(x: -dy / len, y: dx / len)
+                    let offsetModel = 16.0 / effectiveScale
+                    let handleModelPos = CGPoint(x: mid.x + unitNormal.x * offsetModel, y: mid.y + unitNormal.y * offsetModel)
+                    let handleScreen = modelToScreen(handleModelPos, size: size, scale: effectiveScale, offset: effectiveOffset)
+
+                    WallHandle(
+                        roomID: room.id,
+                        wallIndex: wall,
+                        v1: v1, v2: v2,
+                        centerScreen: handleScreen,
+                        effectiveScale: effectiveScale,
+                        snapToGrid: snapToGrid,
+                        getRoom: { bindingForRoom(id: $0) },
+                        onCommit: { floorPlan.saveToHistory() }
+                    )
+                    .allowsHitTesting(true)
+                }
             }
         }
-        var bestAbsY: CGFloat = .infinity
-        for v in currentVertices {
-            let yAfter = v.y + dy
-            let targetY = round(yAfter / GRID_STEP) * GRID_STEP
-            let corr = targetY - yAfter
-            if abs(corr) <= SNAP_TOLERANCE, abs(corr) < bestAbsY {
-                bestAbsY = abs(corr); bestDy = dy + corr
-            }
-        }
-        return (bestDx, bestDy)
     }
 
-    // MARK: - Dimensions (subtle) + editable labels
+    private func singleWallOverlay(room: Room, wall: Int, size: CGSize, effectiveScale: CGFloat, effectiveOffset: CGSize) -> some View {
+        let v1 = room.vertices[wall], v2 = room.vertices[(wall + 1) % room.vertices.count]
+
+        return ZStack {
+            Path { path in
+                let sStart = modelToScreen(v1, size: size, scale: effectiveScale, offset: effectiveOffset)
+                let sEnd = modelToScreen(v2, size: size, scale: effectiveScale, offset: effectiveOffset)
+                path.move(to: sStart); path.addLine(to: sEnd)
+            }
+            .stroke(Color.orange.opacity(0.9), lineWidth: 4)
+
+            WallHitRail(
+                roomID: room.id,
+                wallIndex: wall,
+                v1: v1, v2: v2,
+                effectiveScale: effectiveScale,
+                snapToGrid: snapToGrid,
+                getRoom: { bindingForRoom(id: $0) },
+                onCommit: { floorPlan.saveToHistory() }
+            )
+            .allowsHitTesting(true)
+
+            let dx = v2.x - v1.x, dy = v2.y - v1.y
+            let len = hypot(dx, dy)
+            if len > 0 {
+                let mid = CGPoint(x: (v1.x + v2.x)/2, y: (v1.y + v2.y)/2)
+                let unitNormal = CGPoint(x: -dy / len, y: dx / len)
+                let offsetModel = 16.0 / effectiveScale
+                let handleModelPos = CGPoint(x: mid.x + unitNormal.x * offsetModel, y: mid.y + unitNormal.y * offsetModel)
+                let handleScreen = modelToScreen(handleModelPos, size: size, scale: effectiveScale, offset: effectiveOffset)
+
+                WallHandle(
+                    roomID: room.id,
+                    wallIndex: wall,
+                    v1: v1, v2: v2,
+                    centerScreen: handleScreen,
+                    effectiveScale: effectiveScale,
+                    snapToGrid: snapToGrid,
+                    getRoom: { bindingForRoom(id: $0) },
+                    onCommit: { floorPlan.saveToHistory() }
+                )
+                .allowsHitTesting(true)
+            }
+        }
+    }
+
+    // MARK: - Dimensions
+
     private func drawDimensions(for room: Room, size: CGSize, effectiveScale: CGFloat, effectiveOffset: CGSize) -> some View {
         let count = room.vertices.count
         return ZStack {
@@ -572,8 +527,6 @@ struct FloorPlanView: View {
                     let t2b = CGPoint(x: sb.x + tickNormal.x * tickHalf, y: sb.y + tickNormal.y * tickHalf)
 
                     let midScreen = CGPoint(x: (sa.x + sb.x)/2, y: (sa.y + sb.y)/2)
-                    let angle = atan2(sb.y - sa.y, sb.x - sa.x)
-                    let labelAngle = angle > .pi/2 || angle < -.pi/2 ? angle + .pi : angle
 
                     Path { p in
                         p.move(to: sa); p.addLine(to: sb)
@@ -583,79 +536,27 @@ struct FloorPlanView: View {
                     .stroke(Color.secondary.opacity(0.45), lineWidth: 1)
 
                     let formatted = formattedLength(lengthModel)
-                    let isEditing = editingDimension?.roomID == room.id && editingDimension?.wallIndex == i
 
-                    if isEditing {
-                        EditableDimensionField(
-                            text: $editingText,
-                            onCommit: { commitDimensionEdit(roomID: room.id, wallIndex: i, text: editingText) },
-                            onCancel: { editingDimension = nil }
-                        )
-                        .frame(width: 80)
-                        .rotationEffect(Angle(radians: Double(labelAngle)))
+                    Text(formatted)
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color(white: 0.1).opacity(0.25), in: Capsule())
+                        .foregroundStyle(Color.primary.opacity(0.85))
                         .position(midScreen)
-                        .allowsHitTesting(true)
-                    } else {
-                        Text(formatted)
-                            .font(.system(size: 10, weight: .semibold, design: .rounded))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color(white: 0.1).opacity(0.25), in: Capsule())
-                            .foregroundStyle(Color.primary.opacity(0.85))
-                            .rotationEffect(Angle(radians: Double(labelAngle)))
-                            .position(midScreen)
-                            .onTapGesture {
-                                editingDimension = (roomID: room.id, wallIndex: i)
-                                editingText = String(format: "%.2f", Double(lengthModel))
-                            }
-                            .allowsHitTesting(true)
-                    }
-                } else {
-                    EmptyView()
                 }
             }
         }
     }
 
-    private func commitDimensionEdit(roomID: UUID, wallIndex: Int, text: String) {
-        defer { editingDimension = nil }
-        let sanitized = text.replacingOccurrences(of: ",", with: ".")
-        guard let value = Double(sanitized), value > 0 else { return }
-        let newLen = CGFloat(value)
-
-        guard let binding = bindingForRoom(id: roomID) else { return }
-        var room = binding.wrappedValue
-        guard room.vertices.indices.contains(wallIndex) else { return }
-
-        let i1 = wallIndex
-        let i2 = (wallIndex + 1) % room.vertices.count
-        let s = room.vertices[i1], e = room.vertices[i2]
-        let dx = e.x - s.x, dy = e.y - s.y
-        let len = hypot(dx, dy); guard len > 0 else { return }
-
-        let mid = CGPoint(x: (s.x + e.x)/2, y: (s.y + e.y)/2)
-        let unitDir = CGPoint(x: dx / len, y: dy / len)
-        let half = newLen / 2
-        room.vertices[i1] = CGPoint(x: mid.x - unitDir.x * half, y: mid.y - unitDir.y * half)
-        room.vertices[i2] = CGPoint(x: mid.x + unitDir.x * half, y: mid.y + unitDir.y * half)
-
-        if snapToGrid {
-            room.vertices[i1] = hardSnapPoint(room.vertices[i1])
-            room.vertices[i2] = hardSnapPoint(room.vertices[i2])
-        }
-
-        floorPlan.saveToHistory()
-        binding.wrappedValue = room
-    }
-
     private func formattedLength(_ meters: CGFloat) -> String {
         let v = Double(meters)
-        return v >= 10 ? String(format: "%.1f %@", v, unitLabel)
-                       : String(format: "%.2f %@", v, unitLabel)
+        return v >= 10 ? String(format: "%.1f m", v) : String(format: "%.2f m", v)
     }
 }
 
 // MARK: - Render subview
+
 private struct RoomRender: View {
     let room: Room
     let isSelected: Bool
@@ -664,14 +565,9 @@ private struct RoomRender: View {
 
     var body: some View {
         let path = room.path(using: transform)
-
         ZStack {
             path.fill(room.fillColor)
-
-            if isResizeMode {
-                path.fill(Color.orange.opacity(0.08))
-            }
-
+            if isResizeMode { path.fill(Color.orange.opacity(0.08)) }
             path.stroke(
                 isResizeMode
                     ? Color.orange.opacity(0.9)
@@ -684,8 +580,7 @@ private struct RoomRender: View {
 }
 
 // MARK: - Move capture layer
-/// Transparent hit layer that uses the actual room shape as the drag area,
-/// so room movement in Select mode is reliable.
+
 private struct RoomMoveCapture: View {
     let room: Room
     let isActive: Bool
@@ -698,12 +593,7 @@ private struct RoomMoveCapture: View {
     @State private var isDraggingRoom: Bool = false
 
     var body: some View {
-        let path = room.path(using: { p in
-            // We don't know container size/offset here, but SwiftUI only needs the shape for hit-testing.
-            // Use a unit transform; attach gesture without drawing.
-            CGPoint(x: p.x * effectiveScale, y: p.y * effectiveScale)
-        })
-
+        let path = room.path(using: { p in CGPoint(x: p.x * effectiveScale, y: p.y * effectiveScale) })
         path
             .fill(Color.clear)
             .contentShape(path)
@@ -748,7 +638,8 @@ private struct RoomMoveCapture: View {
     }
 }
 
-// MARK: - Hit rails & handles
+// MARK: - Rails & Handles
+
 private struct WallHitRail: View {
     let roomID: UUID
     let wallIndex: Int
@@ -763,8 +654,8 @@ private struct WallHitRail: View {
 
     var body: some View {
         GeometryReader { geo in
-            let sStart = modelToScreen(v1, geo: geo)
-            let sEnd   = modelToScreen(v2, geo: geo)
+            let sStart = CGPoint(x: v1.x * effectiveScale + geo.size.width/2, y: v1.y * effectiveScale + geo.size.height/2)
+            let sEnd   = CGPoint(x: v2.x * effectiveScale + geo.size.width/2, y: v2.y * effectiveScale + geo.size.height/2)
 
             Path { p in p.move(to: sStart); p.addLine(to: sEnd) }
                 .stroke(Color.clear, lineWidth: 36)
@@ -779,10 +670,8 @@ private struct WallHitRail: View {
                             let i1 = wallIndex
                             let i2 = (wallIndex + 1) % updated.vertices.count
                             let s = updated.vertices[i1], e = updated.vertices[i2]
-
                             let dx = e.x - s.x, dy = e.y - s.y
                             let len = hypot(dx, dy); guard len > 0 else { return }
-
                             let unitNormal = CGPoint(x: -dy / len, y: dx / len)
 
                             let absDx = (value.location.x - (startLocation?.x ?? value.startLocation.x)) / effectiveScale
@@ -823,10 +712,6 @@ private struct WallHitRail: View {
         }
         .allowsHitTesting(true)
     }
-
-    private func modelToScreen(_ p: CGPoint, geo: GeometryProxy) -> CGPoint {
-        CGPoint(x: p.x * effectiveScale + geo.size.width/2, y: p.y * effectiveScale + geo.size.height/2)
-    }
 }
 
 private struct WallHandle: View {
@@ -860,10 +745,8 @@ private struct WallHandle: View {
                         let i1 = wallIndex
                         let i2 = (wallIndex + 1) % updated.vertices.count
                         let s = updated.vertices[i1], e = updated.vertices[i2]
-
                         let dx = e.x - s.x, dy = e.y - s.y
                         let len = hypot(dx, dy); guard len > 0 else { return }
-
                         let unitNormal = CGPoint(x: -dy / len, y: dx / len)
 
                         let absDx = (value.location.x - (startLocation?.x ?? value.startLocation.x)) / effectiveScale
@@ -901,41 +784,5 @@ private struct WallHandle: View {
                         onCommit()
                     }
             )
-    }
-}
-
-// MARK: - Dimensions editor
-private struct EditableDimensionField: View {
-    @Binding var text: String
-    var onCommit: () -> Void
-    var onCancel: () -> Void
-
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        TextField("", text: $text, onCommit: onCommit)
-            .keyboardType(.decimalPad)
-            .textFieldStyle(.plain)
-            .font(.system(size: 12, weight: .semibold, design: .rounded))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(white: 0.1).opacity(0.6))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.white.opacity(0.25), lineWidth: 1)
-            )
-            .foregroundStyle(.white)
-            .focused($focused)
-            .onAppear { focused = true }
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") { onCommit() }
-                    Button("Cancel") { onCancel() }
-                }
-            }
     }
 }

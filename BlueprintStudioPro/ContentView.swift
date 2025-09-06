@@ -2,8 +2,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @EnvironmentObject var floorPlan: FloorPlan
-    @State private var selectedTool: Tool = .select
+    @EnvironmentObject var floorPlan: Floorplan
+    @State private var selectedTool: EditorTool = .select
     @State private var snapToGrid: Bool = true
     @State private var showDimensions: Bool = true
     @State private var projectName: String = "Blueprint Studio Pro"
@@ -118,7 +118,7 @@ struct ContentView: View {
         }
         // MARK: - Top overlays
         .overlay(
-            // Left: branding pill -> Project menu with chevron
+            // Left: branding pill with menu (chevron)
             HStack {
                 Menu {
                     Section("Project") {
@@ -150,7 +150,7 @@ struct ContentView: View {
                             Label("Rename Project", systemImage: "pencil")
                         }
                         Button {
-                            // Future Settings
+                            // Placeholder for Settings
                         } label: {
                             Label("Settings", systemImage: "gearshape")
                         }
@@ -175,7 +175,7 @@ struct ContentView: View {
             alignment: .topLeading
         )
         .overlay(
-            // Right: Floor menu pill — just the floor label
+            // Right: floor menu (current floor only)
             HStack {
                 Spacer()
                 Menu {
@@ -244,7 +244,7 @@ struct ContentView: View {
                             isPresented: $confirmNewProject,
                             titleVisibility: .visible) {
             Button("Start New Project", role: .destructive) {
-                floorPlan.resetProject()               // ✅ Now defined on the model
+                floorPlan.resetProject()
                 projectName = "Untitled Project"
             }
             Button("Cancel", role: .cancel) { }
@@ -263,8 +263,8 @@ struct ContentView: View {
 }
 
 private struct ToolButton: View {
-    let tool: Tool
-    @Binding var selectedTool: Tool
+    let tool: EditorTool
+    @Binding var selectedTool: EditorTool
     let systemName: String
     var enabled: Bool = true
 
@@ -339,5 +339,5 @@ private struct ToggleChip: View {
 }
 
 #Preview {
-    ContentView().environmentObject(FloorPlan())
+    ContentView().environmentObject(Floorplan())
 }
