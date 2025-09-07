@@ -80,10 +80,13 @@ struct Room: Identifiable {
         var path = Path()
         guard let first = vertices.first else { return path }
         path.move(to: transform(first))
-        for v in vertices.dropFirst() { path.addLine(to: v) }
+        for v in vertices.dropFirst() {
+            path.addLine(to: transform(v))
+        }
         path.closeSubpath()
         return path
     }
+
 }
 
 // Custom Equatable/Hashable for Room based on id only (avoids Color/attachment issues)

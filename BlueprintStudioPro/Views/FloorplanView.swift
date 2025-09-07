@@ -92,6 +92,7 @@ struct FloorPlanView: View {
                     let isSelected = room.id == floorPlan.selectedRoomID
                     let isResizeMode = (currentTool == .resize && isSelected)
 
+                    // Fill & Stroke
                     RoomRender(
                         room: room,
                         isSelected: isSelected,
@@ -100,20 +101,23 @@ struct FloorPlanView: View {
                     )
                     .gesture(TapGesture().onEnded { handleTapOnRoom(room: room) })
 
-                    // Move capture layer (select tool) — removed internal state here to keep this file slim
+                    // Openings (non-interactive so they don't steal drags)
+                    openings(for: room, size: geometry.size, effectiveScale: effectiveScale, effectiveOffset: effectiveOffset)
+                        .allowsHitTesting(false)
+
+                    // Move capture layer — ABOVE openings; active whenever Select tool is chosen
                     RoomMoveCapture(
                         room: room,
-                        isActive: currentTool == .select && isSelected,
+                        isActive: currentTool == .select,
                         effectiveScale: effectiveScale,
+                        size: geometry.size,
+                        effectiveOffset: effectiveOffset,
                         getBinding: { bindingForRoom(id: $0) },
                         snapToGrid: snapToGrid,
                         onHistory: { floorPlan.saveToHistory() }
                     )
 
-                    // Windows & Doors
-                    openings(for: room, size: geometry.size, effectiveScale: effectiveScale, effectiveOffset: effectiveOffset)
-
-                    // Resize overlays or single-wall overlay
+                    // Resize overlays or single-wall overlay — on TOP
                     if isResizeMode {
                         resizeOverlays(for: room, size: geometry.size, effectiveScale: effectiveScale, effectiveOffset: effectiveOffset)
                     } else if let selectedID = floorPlan.selectedRoomID,
@@ -123,7 +127,7 @@ struct FloorPlanView: View {
                         singleWallOverlay(room: room, wall: wall, size: geometry.size, effectiveScale: effectiveScale, effectiveOffset: effectiveOffset)
                     }
 
-                    // Dimensions
+                    // Dimensions (kept non-interactive)
                     if showDimensions {
                         drawDimensions(for: room, size: geometry.size, effectiveScale: effectiveScale, effectiveOffset: effectiveOffset)
                             .allowsHitTesting(false)
@@ -151,7 +155,7 @@ struct FloorPlanView: View {
                         .background(Rectangle().fill(Color.accentColor.opacity(0.05)).frame(width: sRect.width, height: sRect.height).position(x: sRect.midX, y: sRect.midY))
                 }
 
-                // Two-finger pan overlay
+                // Two-finger pan overlay (leave interactive, but room/wall gestures are high-priority)
                 TwoFingerPanGestureView(
                     onChanged: { translation in
                         liveTwoFingerPan = translation
@@ -341,7 +345,6 @@ struct FloorPlanView: View {
                 let (p1, p2) = openingPoints(start: start, end: end, attachment: window)
                 let s1 = modelToScreen(p1, size: size, scale: effectiveScale, offset: effectiveOffset)
                 let s2 = modelToScreen(p2, size: size, scale: effectiveScale, offset: effectiveOffset)
-
                 Path { $0.move(to: s1); $0.addLine(to: s2) }
                     .stroke(Color.teal.opacity(0.7), lineWidth: 3)
             }
@@ -354,7 +357,6 @@ struct FloorPlanView: View {
                 let (p1, p2) = openingPoints(start: start, end: end, attachment: door)
                 let s1 = modelToScreen(p1, size: size, scale: effectiveScale, offset: effectiveOffset)
                 let s2 = modelToScreen(p2, size: size, scale: effectiveScale, offset: effectiveOffset)
-
                 Path { $0.move(to: s1); $0.addLine(to: s2) }
                     .stroke(Color.brown.opacity(0.7), lineWidth: 5)
             }
@@ -418,33 +420,12 @@ struct FloorPlanView: View {
                     wallIndex: wall,
                     v1: v1, v2: v2,
                     effectiveScale: effectiveScale,
+                    effectiveOffset: effectiveOffset,
                     snapToGrid: snapToGrid,
                     getRoom: { bindingForRoom(id: $0) },
                     onCommit: { floorPlan.saveToHistory() }
                 )
                 .allowsHitTesting(true)
-
-                let dx = v2.x - v1.x, dy = v2.y - v1.y
-                let len = hypot(dx, dy)
-                if len > 0 {
-                    let mid = CGPoint(x: (v1.x + v2.x)/2, y: (v1.y + v2.y)/2)
-                    let unitNormal = CGPoint(x: -dy / len, y: dx / len)
-                    let offsetModel = 16.0 / effectiveScale
-                    let handleModelPos = CGPoint(x: mid.x + unitNormal.x * offsetModel, y: mid.y + unitNormal.y * offsetModel)
-                    let handleScreen = modelToScreen(handleModelPos, size: size, scale: effectiveScale, offset: effectiveOffset)
-
-                    WallHandle(
-                        roomID: room.id,
-                        wallIndex: wall,
-                        v1: v1, v2: v2,
-                        centerScreen: handleScreen,
-                        effectiveScale: effectiveScale,
-                        snapToGrid: snapToGrid,
-                        getRoom: { bindingForRoom(id: $0) },
-                        onCommit: { floorPlan.saveToHistory() }
-                    )
-                    .allowsHitTesting(true)
-                }
             }
         }
     }
@@ -465,33 +446,12 @@ struct FloorPlanView: View {
                 wallIndex: wall,
                 v1: v1, v2: v2,
                 effectiveScale: effectiveScale,
+                effectiveOffset: effectiveOffset,
                 snapToGrid: snapToGrid,
                 getRoom: { bindingForRoom(id: $0) },
                 onCommit: { floorPlan.saveToHistory() }
             )
             .allowsHitTesting(true)
-
-            let dx = v2.x - v1.x, dy = v2.y - v1.y
-            let len = hypot(dx, dy)
-            if len > 0 {
-                let mid = CGPoint(x: (v1.x + v2.x)/2, y: (v1.y + v2.y)/2)
-                let unitNormal = CGPoint(x: -dy / len, y: dx / len)
-                let offsetModel = 16.0 / effectiveScale
-                let handleModelPos = CGPoint(x: mid.x + unitNormal.x * offsetModel, y: mid.y + unitNormal.y * offsetModel)
-                let handleScreen = modelToScreen(handleModelPos, size: size, scale: effectiveScale, offset: effectiveOffset)
-
-                WallHandle(
-                    roomID: room.id,
-                    wallIndex: wall,
-                    v1: v1, v2: v2,
-                    centerScreen: handleScreen,
-                    effectiveScale: effectiveScale,
-                    snapToGrid: snapToGrid,
-                    getRoom: { bindingForRoom(id: $0) },
-                    onCommit: { floorPlan.saveToHistory() }
-                )
-                .allowsHitTesting(true)
-            }
         }
     }
 
@@ -580,11 +540,12 @@ private struct RoomRender: View {
 }
 
 // MARK: - Move capture layer
-
 private struct RoomMoveCapture: View {
     let room: Room
-    let isActive: Bool
+    let isActive: Bool                 // pass: currentTool == .select
     let effectiveScale: CGFloat
+    let size: CGSize
+    let effectiveOffset: CGSize
     let getBinding: (UUID) -> Binding<Room>?
     let snapToGrid: Bool
     let onHistory: () -> Void
@@ -593,12 +554,19 @@ private struct RoomMoveCapture: View {
     @State private var isDraggingRoom: Bool = false
 
     var body: some View {
-        let path = room.path(using: { p in CGPoint(x: p.x * effectiveScale, y: p.y * effectiveScale) })
+        // Build the hit path in screen space (scale + center + pan offset)
+        let path = room.path(using: { p in
+            CGPoint(
+                x: p.x * effectiveScale + size.width/2 + effectiveOffset.width,
+                y: p.y * effectiveScale + size.height/2 + effectiveOffset.height
+            )
+        })
+
         path
             .fill(Color.clear)
             .contentShape(path)
-            .gesture(
-                DragGesture(minimumDistance: 5)
+            .highPriorityGesture( // ensure this wins over other gestures (e.g., 2-finger pan)
+                DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         guard isActive, let binding = getBinding(room.id) else { return }
                         if !isDraggingRoom { isDraggingRoom = true }
@@ -617,8 +585,7 @@ private struct RoomMoveCapture: View {
                         }
                         binding.wrappedValue = updated
 
-                        roomDragTranslation.width += dx * effectiveScale
-                        roomDragTranslation.height += dy * effectiveScale
+                        roomDragTranslation = value.translation
                     }
                     .onEnded { _ in
                         guard isActive, let binding = getBinding(room.id) else { return }
@@ -639,13 +606,13 @@ private struct RoomMoveCapture: View {
 }
 
 // MARK: - Rails & Handles
-
 private struct WallHitRail: View {
     let roomID: UUID
     let wallIndex: Int
     let v1: CGPoint
     let v2: CGPoint
     let effectiveScale: CGFloat
+    let effectiveOffset: CGSize
     let snapToGrid: Bool
     let getRoom: (UUID) -> Binding<Room>?
     let onCommit: () -> Void
@@ -654,13 +621,20 @@ private struct WallHitRail: View {
 
     var body: some View {
         GeometryReader { geo in
-            let sStart = CGPoint(x: v1.x * effectiveScale + geo.size.width/2, y: v1.y * effectiveScale + geo.size.height/2)
-            let sEnd   = CGPoint(x: v2.x * effectiveScale + geo.size.width/2, y: v2.y * effectiveScale + geo.size.height/2)
+            // Build the rail endpoints in screen space (scale + center + pan offset)
+            let sStart = CGPoint(
+                x: v1.x * effectiveScale + geo.size.width/2 + effectiveOffset.width,
+                y: v1.y * effectiveScale + geo.size.height/2 + effectiveOffset.height
+            )
+            let sEnd = CGPoint(
+                x: v2.x * effectiveScale + geo.size.width/2 + effectiveOffset.width,
+                y: v2.y * effectiveScale + geo.size.height/2 + effectiveOffset.height
+            )
 
             Path { p in p.move(to: sStart); p.addLine(to: sEnd) }
-                .stroke(Color.clear, lineWidth: 36)
+                .stroke(Color.clear, lineWidth: 36) // wide invisible rail for easy grab
                 .contentShape(Rectangle())
-                .gesture(
+                .highPriorityGesture( // <- make wall drag win precedence
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
                             if startLocation == nil { startLocation = value.startLocation }
@@ -710,79 +684,5 @@ private struct WallHitRail: View {
                         }
                 )
         }
-        .allowsHitTesting(true)
-    }
-}
-
-private struct WallHandle: View {
-    let roomID: UUID
-    let wallIndex: Int
-    let v1: CGPoint
-    let v2: CGPoint
-    let centerScreen: CGPoint
-    let effectiveScale: CGFloat
-    let snapToGrid: Bool
-    let getRoom: (UUID) -> Binding<Room>?
-    let onCommit: () -> Void
-
-    @State private var startLocation: CGPoint? = nil
-
-    var body: some View {
-        Circle()
-            .fill(Color.orange)
-            .overlay(Circle().stroke(Color.white, lineWidth: 2))
-            .frame(width: 22, height: 22)
-            .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
-            .position(centerScreen)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        if startLocation == nil { startLocation = value.startLocation }
-                        guard let binding = getRoom(roomID) else { return }
-                        var updated = binding.wrappedValue
-
-                        let i1 = wallIndex
-                        let i2 = (wallIndex + 1) % updated.vertices.count
-                        let s = updated.vertices[i1], e = updated.vertices[i2]
-                        let dx = e.x - s.x, dy = e.y - s.y
-                        let len = hypot(dx, dy); guard len > 0 else { return }
-                        let unitNormal = CGPoint(x: -dy / len, y: dx / len)
-
-                        let absDx = (value.location.x - (startLocation?.x ?? value.startLocation.x)) / effectiveScale
-                        let absDy = (value.location.y - (startLocation?.y ?? value.startLocation.y)) / effectiveScale
-                        var deltaNormal = absDx * unitNormal.x + absDy * unitNormal.y
-
-                        if snapToGrid {
-                            let movedS = CGPoint(x: s.x + unitNormal.x * deltaNormal, y: s.y + unitNormal.y * deltaNormal)
-                            let movedE = CGPoint(x: e.x + unitNormal.x * deltaNormal, y: e.y + unitNormal.y * deltaNormal)
-                            let snappedS = softlySnapPoint(movedS), snappedE = softlySnapPoint(movedE)
-                            if movedS != snappedS || movedE != snappedE {
-                                let corrS = ((snappedS.x - movedS.x) * unitNormal.x + (snappedS.y - movedS.y) * unitNormal.y)
-                                let corrE = ((snappedE.x - movedE.x) * unitNormal.x + (snappedE.y - movedE.y) * unitNormal.y)
-                                deltaNormal += (corrS + corrE) / 2
-                            }
-                        }
-
-                        let deltaVec = CGPoint(x: unitNormal.x * deltaNormal, y: unitNormal.y * deltaNormal)
-                        updated.vertices[i1].x = s.x + deltaVec.x
-                        updated.vertices[i1].y = s.y + deltaVec.y
-                        updated.vertices[i2].x = e.x + deltaVec.x
-                        updated.vertices[i2].y = e.y + deltaVec.y
-
-                        binding.wrappedValue = updated
-                    }
-                    .onEnded { _ in
-                        if snapToGrid, let binding = getRoom(roomID) {
-                            var updated = binding.wrappedValue
-                            let i1 = wallIndex, i2 = (wallIndex + 1) % updated.vertices.count
-                            updated.vertices[i1] = hardSnapPoint(updated.vertices[i1])
-                            updated.vertices[i2] = hardSnapPoint(updated.vertices[i2])
-                            binding.wrappedValue = updated
-                        }
-                        startLocation = nil
-                        onCommit()
-                    }
-            )
     }
 }
