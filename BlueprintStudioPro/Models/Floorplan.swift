@@ -3,7 +3,7 @@ import Combine
 
 // MARK: - Core Models
 
-struct Floor: Identifiable, Equatable {
+struct Floor: Identifiable, Equatable, Codable {
     let id: UUID
     var name: String
     var rooms: [Room]
@@ -15,36 +15,84 @@ struct Floor: Identifiable, Equatable {
     }
 }
 
-protocol WallAttachment {
+protocol WallAttachment: Codable {
     var wallIndex: Int { get set }   // wall index in room polygon
     var offset: CGFloat { get set }  // 0...1 along wall
     var length: CGFloat { get set }  // meters
 }
 
 struct Window: Identifiable, WallAttachment {
-    let id = UUID()
+    let id: UUID
     var wallIndex: Int
     var offset: CGFloat
     var length: CGFloat
+
+    init(id: UUID = UUID(), wallIndex: Int, offset: CGFloat, length: CGFloat) {
+        self.id = id; self.wallIndex = wallIndex; self.offset = offset; self.length = length
+    }
 }
 
 struct Door: Identifiable, WallAttachment {
-    let id = UUID()
+    let id: UUID
     var wallIndex: Int
     var offset: CGFloat
     var length: CGFloat
+
+    init(id: UUID = UUID(), wallIndex: Int, offset: CGFloat, length: CGFloat) {
+        self.id = id; self.wallIndex = wallIndex; self.offset = offset; self.length = length
+    }
 }
 
-struct Room: Identifiable {
+// NOTE: 'internal' is a Swift access-control keyword, so we use 'internalWall' instead.
+enum WallType: String, Codable {
+    case internalWall
+    case externalWall
+}
+
+struct Room: Identifiable, Codable, Hashable {
     let id: UUID
-    var vertices: [CGPoint]     // in meters (model space)
+    var name: String
+    var vertices: [CGPoint]     // model space, meters
+    var wallTypes: [WallType]   // per-edge, same count as vertices
     var windows: [Window] = []
     var doors: [Door] = []
-    var fillColor: Color = Color.blue.opacity(0.06)
 
-    init(id: UUID = UUID(), vertices: [CGPoint]) {
+    // Store HSBA directly so we can round-trip without UIKit.
+    private var _h: Double
+    private var _s: Double
+    private var _b: Double
+    private var _a: Double
+
+    /// Computed SwiftUI color (opacity is baked into `_a`)
+    var fillColor: Color {
+        Color(hue: _h, saturation: _s, brightness: _b).opacity(_a)
+    }
+
+    /// Designated initializer. If `hsba` is nil, a random pastel is chosen.
+    init(
+        id: UUID = UUID(),
+        name: String = "",
+        vertices: [CGPoint],
+        wallTypes: [WallType]? = nil,
+        hsba: (h: Double, s: Double, b: Double, a: Double)? = nil
+    ) {
         self.id = id
+        self.name = name
         self.vertices = vertices
+        self.wallTypes = wallTypes ?? Array(repeating: .externalWall, count: max(vertices.count, 0))
+
+        if let hsba {
+            self._h = hsba.h
+            self._s = hsba.s
+            self._b = hsba.b
+            self._a = hsba.a
+        } else {
+            let pastel = Room.randomPastelHSBA()
+            self._h = pastel.h
+            self._s = pastel.s
+            self._b = pastel.b
+            self._a = pastel.a
+        }
     }
 
     // Simple point-in-polygon
@@ -55,8 +103,10 @@ struct Room: Identifiable {
             let j = (i + vertices.count - 1) % vertices.count
             let xi = vertices[i].x, yi = vertices[i].y
             let xj = vertices[j].x, yj = vertices[j].y
+            let denom = (yj - yi)
+            let safeDenom: CGFloat = denom == 0 ? .leastNonzeroMagnitude : denom
             let intersect = ((yi > point.y) != (yj > point.y)) &&
-            (point.x < (xj - xi) * (point.y - yi) / ((yj - yi) == 0 ? 1 : (yj - yi)) + xi)
+            (point.x < (xj - xi) * (point.y - yi) / safeDenom + xi)
             if intersect { inside.toggle() }
         }
         return inside
@@ -80,22 +130,27 @@ struct Room: Identifiable {
         var path = Path()
         guard let first = vertices.first else { return path }
         path.move(to: transform(first))
-        for v in vertices.dropFirst() {
-            path.addLine(to: transform(v))
-        }
+        for v in vertices.dropFirst() { path.addLine(to: transform(v)) }
         path.closeSubpath()
         return path
     }
 
-}
+    // MARK: - Color helpers (UIKit-free)
 
-// Custom Equatable/Hashable for Room based on id only (avoids Color/attachment issues)
-extension Room: Equatable {
+    /// Random soft/pastel HSBA with low opacity for pleasant room fills.
+    static func randomPastelHSBA() -> (h: Double, s: Double, b: Double, a: Double) {
+        let h = Double.random(in: 0...1)
+        let s = Double.random(in: 0.35...0.55)
+        let b = Double.random(in: 0.92...1.0)
+        let a = 0.10
+        return (h, s, b, a)
+    }
+
+    // Hashable/Equatable by id
     static func == (lhs: Room, rhs: Room) -> Bool { lhs.id == rhs.id }
-}
-extension Room: Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
+
 
 // MARK: - Geometry utility
 
@@ -111,13 +166,15 @@ fileprivate func distancePointToSegment(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint
 // MARK: - Editor Tools
 
 enum EditorTool: String, CaseIterable, Identifiable {
-    case select = "Select"
-    case delete = "Delete"
+    case select  = "Select"
+    case delete  = "Delete"
     case drawWall = "Draw Wall"
     case drawRoom = "Draw Room"
     case addWindow = "Window"
-    case addDoor = "Door"
-    case resize = "Resize"
+    case addDoor  = "Door"
+    case resize   = "Resize"
+    case duplicate = "Duplicate"
+    case rotate    = "Rotate"
     var id: String { rawValue }
 }
 
@@ -132,14 +189,14 @@ final class Floorplan: ObservableObject {
     // Convenience for current floor rooms
     var rooms: [Room] {
         get { floors[currentFloorIndex].rooms }
-        set { floors[currentFloorIndex].rooms = newValue }
+        set { objectWillChange.send(); floors[currentFloorIndex].rooms = newValue }
     }
 
     // Selection
     @Published var selectedRoomID: UUID? = nil
     @Published var selectedWallIndex: Int? = nil
 
-    // History (very lightweight)
+    // History
     private var undoStack: [[Floor]] = []
     private var redoStack: [[Floor]] = []
 
@@ -184,18 +241,23 @@ final class Floorplan: ObservableObject {
         rooms.append(Room(vertices: vertices))
     }
 
+    func addNamedRoom(_ name: String, vertices: [CGPoint]) {
+        saveToHistory()
+        var r = Room(vertices: vertices)
+        r.name = name
+        rooms.append(r)
+    }
+
     func selectRoom(containing point: CGPoint) {
         for r in rooms.reversed() {
-            if r.contains(point: point) {
-                selectedRoomID = r.id
-                return
-            }
+            if r.contains(point: point) { selectedRoomID = r.id; return }
         }
         selectedRoomID = nil
     }
 
     func selectWall(near point: CGPoint, threshold: CGFloat) {
-        guard let id = selectedRoomID, let idx = rooms.firstIndex(where: { $0.id == id }) else {
+        guard let id = selectedRoomID,
+              let idx = rooms.firstIndex(where: { $0.id == id }) else {
             selectedWallIndex = nil; return
         }
         selectedWallIndex = rooms[idx].indexOfWall(near: point, threshold: threshold)
@@ -207,6 +269,25 @@ final class Floorplan: ObservableObject {
         rooms.remove(at: idx)
         selectedRoomID = nil
         selectedWallIndex = nil
+    }
+
+    func renameSelectedRoom(to newName: String) {
+        guard let id = selectedRoomID,
+              let idx = rooms.firstIndex(where: { $0.id == id }) else { return }
+        saveToHistory()
+        rooms[idx].name = newName
+    }
+
+    func setSelectedWallType(_ type: WallType) {
+        guard let rid = selectedRoomID,
+              let wIndex = selectedWallIndex,
+              let idx = rooms.firstIndex(where: { $0.id == rid }),
+              rooms[idx].vertices.indices.contains(wIndex) else { return }
+        saveToHistory()
+        if rooms[idx].wallTypes.count != rooms[idx].vertices.count {
+            rooms[idx].wallTypes = Array(repeating: .externalWall, count: rooms[idx].vertices.count)
+        }
+        rooms[idx].wallTypes[wIndex] = type
     }
 
     func addWindow(at offset: CGFloat) {
@@ -230,28 +311,52 @@ final class Floorplan: ObservableObject {
     }
 
     // MARK: - History
-    func saveToHistory() {
-        undoStack.append(floors)
-        redoStack.removeAll()
-    }
-
+    func saveToHistory() { undoStack.append(floors); redoStack.removeAll() }
     func undo() {
         guard let last = undoStack.popLast() else { return }
-        redoStack.append(floors)
-        floors = last
-        selectedRoomID = nil
-        selectedWallIndex = nil
+        redoStack.append(floors); floors = last
+        selectedRoomID = nil; selectedWallIndex = nil
     }
-
     func redo() {
         guard let next = redoStack.popLast() else { return }
-        undoStack.append(floors)
-        floors = next
-        selectedRoomID = nil
+        undoStack.append(floors); floors = next
+        selectedRoomID = nil; selectedWallIndex = nil
+    }
+
+    // MARK: - Extra tools
+    func duplicateSelectedRoom() {
+        guard let id = selectedRoomID,
+              let idx = rooms.firstIndex(where: { $0.id == id }) else { return }
+        saveToHistory()
+        let original = rooms[idx]
+        var newRoom = Room(
+            id: UUID(),
+            name: original.name.isEmpty ? "" : "\(original.name) Copy",
+            vertices: original.vertices.map { CGPoint(x: $0.x + 2, y: $0.y + 2) },
+            wallTypes: original.wallTypes
+        )
+        newRoom.windows = original.windows
+        newRoom.doors = original.doors
+        rooms.append(newRoom)
+        selectedRoomID = newRoom.id
         selectedWallIndex = nil
     }
 
-    // MARK: - Export
+    func rotateSelectedRoom() {
+        guard let id = selectedRoomID,
+              let idx = rooms.firstIndex(where: { $0.id == id }) else { return }
+        saveToHistory()
+        var room = rooms[idx]
+        let cx = room.vertices.map(\.x).reduce(0, +) / CGFloat(room.vertices.count)
+        let cy = room.vertices.map(\.y).reduce(0, +) / CGFloat(room.vertices.count)
+        room.vertices = room.vertices.map { pt in
+            let x = pt.x - cx, y = pt.y - cy
+            return CGPoint(x: cx + y, y: cy - x)
+        }
+        rooms[idx] = room
+    }
+
+    // MARK: - Export (simple JSON for "Export JSON" menu)
     func exportData() -> Data {
         struct EncodedFloor: Codable { var id: UUID; var name: String; var rooms: [[CGPoint]] }
         let payload = floors.map { EncodedFloor(id: $0.id, name: $0.name, rooms: $0.rooms.map { $0.vertices }) }
@@ -259,5 +364,21 @@ final class Floorplan: ObservableObject {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return (try? encoder.encode(payload)) ?? Data()
     }
-}
 
+    // MARK: - Full Project Save/Load (used by Projects)
+    func projectData() -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted]
+        return (try? encoder.encode(floors)) ?? Data()
+    }
+
+    func loadProject(from data: Data) throws {
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode([Floor].self, from: data)
+        floors = decoded
+        currentFloorIndex = min(currentFloorIndex, max(0, floors.count - 1))
+        selectedRoomID = nil
+        selectedWallIndex = nil
+        undoStack.removeAll(); redoStack.removeAll()
+    }
+}
