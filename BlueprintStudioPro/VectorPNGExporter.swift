@@ -82,6 +82,7 @@ enum VectorPNGExporter {
             bitmapInfo: bitmapInfo
         ) else { return nil }
 
+
         // Background
         ctx.setFillColor(opts.background)
         ctx.fill(CGRect(origin: .zero, size: pixelSize))

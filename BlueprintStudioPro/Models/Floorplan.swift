@@ -381,4 +381,49 @@ final class Floorplan: ObservableObject {
         selectedWallIndex = nil
         undoStack.removeAll(); redoStack.removeAll()
     }
+    
+    func updateWallTypes() {
+        for floorIndex in floors.indices {
+            for roomIndex in floors[floorIndex].rooms.indices {
+                var room = floors[floorIndex].rooms[roomIndex]
+                let n = room.vertices.count
+                var newTypes: [WallType] = []
+                for i in 0..<n {
+                    let a = room.vertices[i]
+                    let b = room.vertices[(i + 1) % n]
+                    // midpoint
+                    let mid = CGPoint(x: (a.x + b.x)/2, y: (a.y + b.y)/2)
+                    // normal vector
+                    let dx = b.x - a.x
+                    let dy = b.y - a.y
+                    let len = hypot(dx, dy)
+                    guard len > 0 else { newTypes.append(.externalWall); continue }
+                    let normal = CGPoint(x: -dy/len, y: dx/len)
+                    // pick samples on both sides
+                    let sampleDist: CGFloat = 0.1
+                    let s1 = CGPoint(x: mid.x + normal.x * sampleDist, y: mid.y + normal.y * sampleDist)
+                    let s2 = CGPoint(x: mid.x - normal.x * sampleDist, y: mid.y - normal.y * sampleDist)
+                    // interior vs exterior
+                    let interior = room.contains(point: s1) ? s1 : s2
+                    let exterior = room.contains(point: s1) ? s2 : s1
+                    // test if any other room covers exterior sample
+                    var isExternal = true
+                    for (fi, floor) in floors.enumerated() {
+                        for (ri, other) in floor.rooms.enumerated() {
+                            if fi == floorIndex && ri == roomIndex { continue }
+                            if other.contains(point: exterior) {
+                                isExternal = false
+                                break
+                            }
+                        }
+                        if !isExternal { break }
+                    }
+                    newTypes.append(isExternal ? .externalWall : .internalWall)
+                }
+                room.wallTypes = newTypes
+                floors[floorIndex].rooms[roomIndex] = room
+            }
+        }
+    }
+
 }
