@@ -4,7 +4,7 @@ import UIKit
 /// SwiftUI wrapper for UIDocumentInteractionController ("Open in…", Preview).
 struct DocumentLauncher: UIViewControllerRepresentable {
     let url: URL
-
+    
     func makeUIViewController(context: Context) -> UIViewController {
         let vc = UIViewController()
         DispatchQueue.main.async {
@@ -12,9 +12,9 @@ struct DocumentLauncher: UIViewControllerRepresentable {
         }
         return vc
     }
-
+    
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) { }
-
+    
     private func present(from sourceView: UIView, url: URL) {
         let controller = UIDocumentInteractionController(url: url)
         controller.uti = (try? url.resourceValues(forKeys: [.typeIdentifierKey]).typeIdentifier) ?? nil

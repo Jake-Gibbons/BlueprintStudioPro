@@ -56,13 +56,13 @@ struct FloorPlanView: View {
                                          height: panOffset.height + liveTwoFingerPan.height)
 
             ZStack {
-                // 1. Grid
+                // 1) Grid
                 GridView(scale: effectiveScale, offset: effectiveOffset, size: geometry.size)
 
-                // 2. Rooms & overlays
+                // 2) Rooms & overlays
                 ForEach(floorPlan.rooms) { room in
-                    let isSelected = room.id == floorPlan.selectedRoomID
-                    let isResizeMode = (currentTool == .resize && isSelected)
+                    let isSelected = (room.id == floorPlan.selectedRoomID) || floorPlan.selectedRoomIDs.contains(room.id)
+                    let isResizeMode = (currentTool == .resize && ((floorPlan.activeRoomID == room.id) || isSelected))
 
                     // Room shape + watermark + variable-width edges
                     RoomRender(
@@ -71,7 +71,10 @@ struct FloorPlanView: View {
                         isResizeMode: isResizeMode,
                         transform: { modelToScreen($0, size: geometry.size, scale: effectiveScale, offset: effectiveOffset) }
                     )
-                    .highPriorityGesture(TapGesture().onEnded { handleTapOnRoom(room: room) })
+                    // Taps on the shape (for non-select tools) → single select
+                    .highPriorityGesture(
+                        TapGesture().onEnded { handleTapOnRoom(room: room) }
+                    )
                     .zIndex(1)
 
                     // Openings drawn above but non-interactive
@@ -79,16 +82,33 @@ struct FloorPlanView: View {
                         .allowsHitTesting(false)
                         .zIndex(1)
 
-                    // Movement overlay (full screen) – checks if drag begins inside room
+                    // Movement & tap capture limited to the room polygon — only in Select tool
                     RoomMoveCapture(
                         room: room,
-                        isActive: currentTool == .select,
+                        isActive: (currentTool == .select),
                         effectiveScale: effectiveScale,
                         size: geometry.size,
                         effectiveOffset: effectiveOffset,
                         getBinding: { bindingForRoom(id: $0) },
                         snapToGrid: snapToGrid,
-                        onHistory: { floorPlan.saveToHistory() }
+                        onHistory: { floorPlan.saveToHistory() },
+                        onTap: { tapModelPoint in
+                            // Toggle selection of the tapped room
+                            floorPlan.toggleSelect(room.id)
+
+                            // If now it’s the only selected room, try to pick a wall near the tap
+                            if floorPlan.selectedRoomIDs.count == 1,
+                               floorPlan.selectedRoomIDs.contains(room.id) {
+                                if let wall = room.indexOfWall(near: tapModelPoint, threshold: 0.3) {
+                                    floorPlan.selectedWallIndex = wall
+                                } else {
+                                    floorPlan.selectedWallIndex = nil
+                                }
+                            } else {
+                                // Multiple rooms selected: clear wall focus
+                                floorPlan.selectedWallIndex = nil
+                            }
+                        }
                     )
                     .zIndex(2)
 
@@ -96,7 +116,7 @@ struct FloorPlanView: View {
                     if isResizeMode {
                         resizeOverlays(for: room, size: geometry.size, effectiveScale: effectiveScale, effectiveOffset: effectiveOffset)
                             .zIndex(3)
-                    } else if let selectedID = floorPlan.selectedRoomID,
+                    } else if let selectedID = floorPlan.activeRoomID,
                               selectedID == room.id,
                               let wallIndex = floorPlan.selectedWallIndex,
                               room.vertices.indices.contains(wallIndex) {
@@ -115,7 +135,7 @@ struct FloorPlanView: View {
                 // Opening preview (ghost)
                 openingPreviewLayer(size: geometry.size, effectiveScale: effectiveScale, effectiveOffset: effectiveOffset)
 
-                // Draw-wall and draw-room previews
+                // Draw-wall preview
                 if currentTool == .drawWall && !workingVertices.isEmpty {
                     Path { path in
                         let pts = workingVertices.map {
@@ -126,12 +146,19 @@ struct FloorPlanView: View {
                     }
                     .stroke(Color.red.opacity(0.7), style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
                 }
+
+                // Draw-room rubber-band preview
                 if let a = drawRoomStart, let b = drawRoomCurrent, currentTool == .drawRoom {
                     let rect = normalizedRect(from: a, to: b)
                     let sRect = modelRectToScreen(rect, size: geometry.size, scale: effectiveScale, offset: effectiveOffset)
                     Rectangle().path(in: sRect)
                         .stroke(Color.accentColor.opacity(0.7), style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
-                        .background(Rectangle().fill(Color.accentColor.opacity(0.05)).frame(width: sRect.width, height: sRect.height).position(x: sRect.midX, y: sRect.midY))
+                        .background(
+                            Rectangle()
+                                .fill(Color.accentColor.opacity(0.05))
+                                .frame(width: sRect.width, height: sRect.height)
+                                .position(x: sRect.midX, y: sRect.midY)
+                        )
                 }
 
                 // Two-finger pan
@@ -151,6 +178,26 @@ struct FloorPlanView: View {
             .coordinateSpace(name: "canvas")
             .simultaneousGesture(magnificationGesture())
             .simultaneousGesture(mainGesture(size: geometry.size))
+            // Background clear-selection tap (runs if no room handled the tap)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onEnded { value in
+                        // Ignore if it was a drag
+                        if abs(value.translation.width) > 3 || abs(value.translation.height) > 3 { return }
+
+                        let effectiveScale = scale * gestureScale
+                        let effectiveOffset = CGSize(width: panOffset.width + liveTwoFingerPan.width,
+                                                     height: panOffset.height + liveTwoFingerPan.height)
+                        let modelPoint = screenToModel(value.location,
+                                                       size: geometry.size,
+                                                       scale: effectiveScale,
+                                                       offset: effectiveOffset)
+                        let hitAny = floorPlan.rooms.contains { $0.contains(point: modelPoint) }
+                        if !hitAny {
+                            floorPlan.clearSelection()
+                        }
+                    }
+            )
         }
     }
 
@@ -161,7 +208,8 @@ struct FloorPlanView: View {
             get: { floorPlan.rooms[idx] },
             set: { newValue in
                 floorPlan.rooms[idx] = newValue
-                floorPlan.floors = floorPlan.floors // Force @Published update
+                // poke to trigger @Published on parent
+                floorPlan.floors = floorPlan.floors
             }
         )
     }
@@ -209,7 +257,7 @@ struct FloorPlanView: View {
                     break
                 case .addWindow, .addDoor:
                     var targetRoom: Room?
-                    if let selID = floorPlan.selectedRoomID,
+                    if let selID = floorPlan.activeRoomID,
                        let sr = floorPlan.rooms.first(where: { $0.id == selID }),
                        sr.contains(point: modelPoint) {
                         targetRoom = sr
@@ -226,7 +274,7 @@ struct FloorPlanView: View {
                     let t = projectionFactor(point: modelPoint, start: start, end: end)
                     let clamped = max(0, min(1, t))
                     previewOpening = PreviewOpening(roomID: room.id, wallIndex: wallIndex, offset: clamped, isDoor: currentTool == .addDoor)
-                    floorPlan.selectedRoomID = room.id
+                    floorPlan.selectOnly(room.id) // focus for single-target actions
                     floorPlan.selectedWallIndex = wallIndex
                 }
             }
@@ -238,19 +286,11 @@ struct FloorPlanView: View {
 
                 switch currentTool {
                 case .select:
-                    let hitAny = floorPlan.rooms.contains { $0.contains(point: modelPoint) }
-                    if !hitAny {
-                        floorPlan.selectedRoomID = nil
-                        floorPlan.selectedWallIndex = nil
-                    } else {
-                        floorPlan.selectRoom(containing: modelPoint)
-                        if floorPlan.selectedRoomID != nil {
-                            floorPlan.selectWall(near: modelPoint, threshold: 0.3)
-                        }
-                    }
+                    // selection handled by RoomMoveCapture tap; nothing to do here
+                    break
                 case .delete:
                     floorPlan.selectRoom(containing: modelPoint)
-                    floorPlan.deleteSelectedRoom()
+                    floorPlan.deleteSelectedRooms()
                 case .drawRoom:
                     if let a = drawRoomStart {
                         if let b = drawRoomCurrent, hypot(b.x - a.x, b.y - a.y) > 0.05 {
@@ -282,7 +322,7 @@ struct FloorPlanView: View {
                     workingVertices.append(pt)
                 case .addWindow, .addDoor:
                     if let preview = previewOpening {
-                        floorPlan.selectedRoomID = preview.roomID
+                        floorPlan.selectOnly(preview.roomID)
                         floorPlan.selectedWallIndex = preview.wallIndex
                         if preview.isDoor { floorPlan.addDoor(at: preview.offset) }
                         else { floorPlan.addWindow(at: preview.offset) }
@@ -317,9 +357,12 @@ struct FloorPlanView: View {
 
     private func handleTapOnRoom(room: Room) {
         switch currentTool {
-        case .select, .addWindow, .addDoor, .resize, .duplicate, .rotate:
-            floorPlan.selectedRoomID = room.id
-        default: break
+        case .select:
+            // Select tool taps handled in RoomMoveCapture for polygon-accurate hit test
+            break
+        default:
+            // For other tools, a tap on the shape selects just this room
+            floorPlan.selectOnly(room.id)
         }
     }
 
@@ -386,7 +429,7 @@ struct FloorPlanView: View {
         return (px*dx + py*dy) / denom
     }
 
-    // MARK: - Resize helpers (rails/handles provided elsewhere; unchanged external API)
+    // MARK: - Resize helpers (rails/handles with parallel movement)
 
     private func resizeOverlays(for room: Room, size: CGSize, effectiveScale: CGFloat, effectiveOffset: CGSize) -> some View {
         let count = room.vertices.count
@@ -410,7 +453,7 @@ struct FloorPlanView: View {
                     effectiveOffset: effectiveOffset,
                     snapToGrid: snapToGrid,
                     getRoom: { bindingForRoom(id: $0) },
-                    onCommit: { floorPlan.saveToHistory() }
+                    onHistoryOnce: { floorPlan.saveToHistory() }
                 )
                 .allowsHitTesting(true)
                 // Handle to drag more easily on mobile
@@ -430,7 +473,7 @@ struct FloorPlanView: View {
                         effectiveScale: effectiveScale,
                         snapToGrid: snapToGrid,
                         getRoom: { bindingForRoom(id: $0) },
-                        onCommit: { floorPlan.saveToHistory() }
+                        onHistoryOnce: { floorPlan.saveToHistory() }
                     )
                     .allowsHitTesting(true)
                 }
@@ -455,7 +498,7 @@ struct FloorPlanView: View {
                 effectiveOffset: effectiveOffset,
                 snapToGrid: snapToGrid,
                 getRoom: { bindingForRoom(id: $0) },
-                onCommit: { floorPlan.saveToHistory() }
+                onHistoryOnce: { floorPlan.saveToHistory() }
             )
             .allowsHitTesting(true)
             let dx = v2.x - v1.x, dy = v2.y - v1.y
@@ -474,7 +517,7 @@ struct FloorPlanView: View {
                     effectiveScale: effectiveScale,
                     snapToGrid: snapToGrid,
                     getRoom: { bindingForRoom(id: $0) },
-                    onCommit: { floorPlan.saveToHistory() }
+                    onHistoryOnce: { floorPlan.saveToHistory() }
                 )
                 .allowsHitTesting(true)
             }
@@ -549,16 +592,13 @@ private struct RoomRender: View {
             // Fill
             path.fill(room.fillColor)
 
-            // Watermark (adjusted so it stays away from dimension tags near edges)
+            // Watermark
             if !room.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let rect = path.boundingRect
-                // leave margin where dimension texts/ticks live (~18px outward + padding).
-                // Inset by 28 vertically and 16 horizontally to avoid overlap visually.
                 let insetRect = rect.insetBy(dx: 16, dy: 28)
                 if insetRect.width > 10, insetRect.height > 10 {
-                    // Base size derived from smaller side of inset rect; keeps within polygon
                     let base = min(insetRect.width, insetRect.height)
-                    let fontSize = max(12, min(base * 0.28, 42)) // reduced and capped
+                    let fontSize = max(12, min(base * 0.28, 42))
                     Text(room.name)
                         .font(.system(size: fontSize, weight: .black, design: .rounded))
                         .minimumScaleFactor(0.5)
@@ -590,7 +630,7 @@ private struct RoomRender: View {
     }
 }
 
-// MARK: - Move capture overlay (unchanged move logic)
+// MARK: - Move capture overlay (polygon hit region, tap selects)
 
 private struct RoomMoveCapture: View {
     let room: Room
@@ -601,36 +641,68 @@ private struct RoomMoveCapture: View {
     let getBinding: (UUID) -> Binding<Room>?
     let snapToGrid: Bool
     let onHistory: () -> Void
+    let onTap: (CGPoint) -> Void     // model-space tap point
 
     @State private var startVertices: [CGPoint] = []
     @State private var startLocation: CGPoint? = nil
+    @State private var historySaved: Bool = false
+    @State private var moved: Bool = false
+
+    // Build the room path in SCREEN space for precise hit testing
+    private func roomScreenPath() -> Path {
+        var path = Path()
+        guard let first = room.vertices.first else { return path }
+        let sFirst = CGPoint(
+            x: first.x * effectiveScale + size.width/2 + effectiveOffset.width,
+            y: first.y * effectiveScale + size.height/2 + effectiveOffset.height
+        )
+        path.move(to: sFirst)
+        for v in room.vertices.dropFirst() {
+            let sv = CGPoint(
+                x: v.x * effectiveScale + size.width/2 + effectiveOffset.width,
+                y: v.y * effectiveScale + size.height/2 + effectiveOffset.height
+            )
+            path.addLine(to: sv)
+        }
+        path.closeSubpath()
+        return path
+    }
 
     var body: some View {
-        Rectangle()
-            .fill(Color.white.opacity(0.001))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
+        let shape = roomScreenPath()
+
+        shape
+            .fill(Color.white.opacity(0.001))   // tiny alpha so it's hittable
+            .contentShape(shape)                 // hit area = polygon, not fullscreen
+            .allowsHitTesting(isActive)          // disabled when not in Select tool
             .highPriorityGesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         guard isActive, let binding = getBinding(room.id) else { return }
+
                         if startLocation == nil {
-                            let sx = value.startLocation.x
-                            let sy = value.startLocation.y
-                            let modelStart = CGPoint(
-                                x: (sx - size.width / 2 - effectiveOffset.width) / effectiveScale,
-                                y: (sy - size.height / 2 - effectiveOffset.height) / effectiveScale
-                            )
-                            if room.contains(point: modelStart) {
-                                startLocation = value.startLocation
-                                startVertices = binding.wrappedValue.vertices
-                            } else {
-                                return
-                            }
+                            // start only if finger began inside the polygon
+                            if !shape.contains(value.startLocation, eoFill: false) { return }
+                            startLocation = value.startLocation
+                            startVertices = binding.wrappedValue.vertices
+                            historySaved = false
+                            moved = false
                         }
+
                         guard let startLoc = startLocation else { return }
-                        let dxModel = (value.location.x - startLoc.x) / effectiveScale
-                        let dyModel = (value.location.y - startLoc.y) / effectiveScale
+
+                        // Detect movement
+                        let dxs = value.location.x - startLoc.x
+                        let dys = value.location.y - startLoc.y
+                        if !moved, (abs(dxs) > 2 || abs(dys) > 2) { moved = true }
+
+                        // Save undo on first movement
+                        if moved && !historySaved { onHistory(); historySaved = true }
+                        guard moved else { return }
+
+                        // Move by finger delta (screen → model)
+                        let dxModel = dxs / effectiveScale
+                        let dyModel = dys / effectiveScale
                         var updated = binding.wrappedValue
                         for i in updated.vertices.indices {
                             updated.vertices[i].x = startVertices[i].x + dxModel
@@ -638,28 +710,41 @@ private struct RoomMoveCapture: View {
                         }
                         binding.wrappedValue = updated
                     }
-                    .onEnded { _ in
-                        guard isActive, let binding = getBinding(room.id) else { return }
-                        if startLocation != nil {
-                            if snapToGrid {
-                                var updated = binding.wrappedValue
-                                for i in updated.vertices.indices {
-                                    updated.vertices[i] = softlySnapPoint(updated.vertices[i])
-                                }
-                                // wallTypes remain intact
-                                binding.wrappedValue = updated
-                            }
-                            startLocation = nil
-                            startVertices = []
-                            onHistory()
+                    .onEnded { value in
+                        guard isActive else { cleanup(); return }
+
+                        if !moved {
+                            // Treat as a tap: report model-space point for wall pick
+                            let tapModel = CGPoint(
+                                x: (value.location.x - size.width / 2 - effectiveOffset.width) / effectiveScale,
+                                y: (value.location.y - size.height / 2 - effectiveOffset.height) / effectiveScale
+                            )
+                            onTap(tapModel)
+                            cleanup()
+                            return
                         }
+
+                        if let binding = getBinding(room.id), snapToGrid {
+                            var updated = binding.wrappedValue
+                            for i in updated.vertices.indices {
+                                updated.vertices[i] = softlySnapPoint(updated.vertices[i])
+                            }
+                            binding.wrappedValue = updated
+                        }
+                        cleanup()
                     }
             )
-            .allowsHitTesting(isActive)
+    }
+
+    private func cleanup() {
+        startLocation = nil
+        startVertices = []
+        historySaved = false
+        moved = false
     }
 }
 
-// MARK: - Rails & Handles (axis-constrained as in your fixed version)
+// MARK: - Rails (parallel wall move via normal projection)
 
 private struct WallHitRail: View {
     let roomID: UUID
@@ -670,11 +755,12 @@ private struct WallHitRail: View {
     let effectiveOffset: CGSize
     let snapToGrid: Bool
     let getRoom: (UUID) -> Binding<Room>?
-    let onCommit: () -> Void
+    let onHistoryOnce: () -> Void   // called once when the first movement occurs
 
     @State private var startLocation: CGPoint?
     @State private var startVertices: [CGPoint] = []
-    @State private var isWallHorizontal: Bool = false
+    @State private var unitNormal: CGPoint = .zero
+    @State private var historySaved: Bool = false
 
     var body: some View {
         GeometryReader { geo in
@@ -686,34 +772,47 @@ private struct WallHitRail: View {
                 p.move(to: sStart)
                 p.addLine(to: sEnd)
             }
-            .stroke(Color.clear, lineWidth: 36)
+            .stroke(Color.clear, lineWidth: 36) // fat, invisible hit rail
             .contentShape(Rectangle())
             .highPriorityGesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         guard let binding = getRoom(roomID) else { return }
+
                         if startLocation == nil {
                             startLocation = value.startLocation
                             startVertices = binding.wrappedValue.vertices
+                            historySaved = false
+
+                            // Compute the wall's unit normal from starting geometry
                             let s = startVertices[wallIndex]
                             let e = startVertices[(wallIndex + 1) % startVertices.count]
-                            let dx = e.x - s.x
-                            let dy = e.y - s.y
-                            isWallHorizontal = abs(dx) >= abs(dy)
+                            let dx = e.x - s.x, dy = e.y - s.y
+                            let len = hypot(dx, dy)
+                            unitNormal = len > 0 ? CGPoint(x: -dy/len, y: dx/len) : .zero
                         }
-                        guard let startLoc = startLocation else { return }
+
+                        guard let startLoc = startLocation, unitNormal != .zero else { return }
+
+                        // Save one snapshot at first motion
+                        if !historySaved { onHistoryOnce(); historySaved = true }
+
+                        // Convert drag delta (screen → model)
+                        let deltaModel = CGPoint(
+                            x: (value.location.x - startLoc.x) / effectiveScale,
+                            y: (value.location.y - startLoc.y) / effectiveScale
+                        )
+                        // Project onto wall normal (parallel move)
+                        let d = deltaModel.x * unitNormal.x + deltaModel.y * unitNormal.y
+                        let offset = CGPoint(x: unitNormal.x * d, y: unitNormal.y * d)
+
                         var updated = binding.wrappedValue
                         let i1 = wallIndex
                         let i2 = (wallIndex + 1) % updated.vertices.count
-                        let absDx = (value.location.x - startLoc.x) / effectiveScale
-                        let absDy = (value.location.y - startLoc.y) / effectiveScale
-                        if isWallHorizontal {
-                            updated.vertices[i1].y = startVertices[i1].y + absDy
-                            updated.vertices[i2].y = startVertices[i2].y + absDy
-                        } else {
-                            updated.vertices[i1].x = startVertices[i1].x + absDx
-                            updated.vertices[i2].x = startVertices[i2].x + absDx
-                        }
+                        updated.vertices[i1].x = startVertices[i1].x + offset.x
+                        updated.vertices[i1].y = startVertices[i1].y + offset.y
+                        updated.vertices[i2].x = startVertices[i2].x + offset.x
+                        updated.vertices[i2].y = startVertices[i2].y + offset.y
                         binding.wrappedValue = updated
                     }
                     .onEnded { _ in
@@ -721,24 +820,26 @@ private struct WallHitRail: View {
                             var updated = binding.wrappedValue
                             let i1 = wallIndex
                             let i2 = (wallIndex + 1) % updated.vertices.count
-                            if isWallHorizontal {
-                                updated.vertices[i1].y = hardSnapPoint(updated.vertices[i1]).y
-                                updated.vertices[i2].y = hardSnapPoint(updated.vertices[i2]).y
-                            } else {
-                                updated.vertices[i1].x = hardSnapPoint(updated.vertices[i1]).x
-                                updated.vertices[i2].x = hardSnapPoint(updated.vertices[i2]).x
-                            }
+                            updated.vertices[i1] = hardSnapPoint(updated.vertices[i1])
+                            updated.vertices[i2] = hardSnapPoint(updated.vertices[i2])
                             binding.wrappedValue = updated
                         }
-                        startLocation = nil
-                        startVertices = []
-                        onCommit()
+                        reset()
                     }
             )
         }
         .allowsHitTesting(true)
     }
+
+    private func reset() {
+        startLocation = nil
+        startVertices = []
+        unitNormal = .zero
+        historySaved = false
+    }
 }
+
+// MARK: - Handle (same parallel wall move; easier grab target)
 
 private struct WallHandle: View {
     let roomID: UUID
@@ -749,11 +850,12 @@ private struct WallHandle: View {
     let effectiveScale: CGFloat
     let snapToGrid: Bool
     let getRoom: (UUID) -> Binding<Room>?
-    let onCommit: () -> Void
+    let onHistoryOnce: () -> Void
 
     @State private var startLocation: CGPoint?
     @State private var startVertices: [CGPoint] = []
-    @State private var isWallHorizontal: Bool = false
+    @State private var unitNormal: CGPoint = .zero
+    @State private var historySaved: Bool = false
 
     var body: some View {
         Circle()
@@ -767,47 +869,57 @@ private struct WallHandle: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         guard let binding = getRoom(roomID) else { return }
+
                         if startLocation == nil {
                             startLocation = value.startLocation
                             startVertices = binding.wrappedValue.vertices
+                            historySaved = false
+
+                            // Compute wall normal from start geometry
                             let s = startVertices[wallIndex]
                             let e = startVertices[(wallIndex + 1) % startVertices.count]
-                            let dx = e.x - s.x
-                            let dy = e.y - s.y
-                            isWallHorizontal = abs(dx) >= abs(dy)
+                            let dx = e.x - s.x, dy = e.y - s.y
+                            let len = hypot(dx, dy)
+                            unitNormal = len > 0 ? CGPoint(x: -dy/len, y: dx/len) : .zero
                         }
-                        guard let startLoc = startLocation else { return }
+
+                        guard let startLoc = startLocation, unitNormal != .zero else { return }
+
+                        if !historySaved { onHistoryOnce(); historySaved = true }
+
+                        let deltaModel = CGPoint(
+                            x: (value.location.x - startLoc.x) / effectiveScale,
+                            y: (value.location.y - startLoc.y) / effectiveScale
+                        )
+                        let d = deltaModel.x * unitNormal.x + deltaModel.y * unitNormal.y
+                        let offset = CGPoint(x: unitNormal.x * d, y: unitNormal.y * d)
+
                         var updated = binding.wrappedValue
                         let i1 = wallIndex
                         let i2 = (wallIndex + 1) % updated.vertices.count
-                        let absDx = (value.location.x - startLoc.x) / effectiveScale
-                        let absDy = (value.location.y - startLoc.y) / effectiveScale
-                        if isWallHorizontal {
-                            updated.vertices[i1].y = startVertices[i1].y + absDy
-                            updated.vertices[i2].y = startVertices[i2].y + absDy
-                        } else {
-                            updated.vertices[i1].x = startVertices[i1].x + absDx
-                            updated.vertices[i2].x = startVertices[i2].x + absDx
-                        }
+                        updated.vertices[i1].x = startVertices[i1].x + offset.x
+                        updated.vertices[i1].y = startVertices[i1].y + offset.y
+                        updated.vertices[i2].x = startVertices[i2].x + offset.x
+                        updated.vertices[i2].y = startVertices[i2].y + offset.y
                         binding.wrappedValue = updated
                     }
                     .onEnded { _ in
                         if snapToGrid, let binding = getRoom(roomID) {
                             var updated = binding.wrappedValue
                             let i1 = wallIndex, i2 = (wallIndex + 1) % updated.vertices.count
-                            if isWallHorizontal {
-                                updated.vertices[i1].y = hardSnapPoint(updated.vertices[i1]).y
-                                updated.vertices[i2].y = hardSnapPoint(updated.vertices[i2]).y
-                            } else {
-                                updated.vertices[i1].x = hardSnapPoint(updated.vertices[i1]).x
-                                updated.vertices[i2].x = hardSnapPoint(updated.vertices[i2]).x
-                            }
+                            updated.vertices[i1] = hardSnapPoint(updated.vertices[i1])
+                            updated.vertices[i2] = hardSnapPoint(updated.vertices[i2])
                             binding.wrappedValue = updated
                         }
-                        startLocation = nil
-                        startVertices = []
-                        onCommit()
+                        reset()
                     }
             )
+    }
+
+    private func reset() {
+        startLocation = nil
+        startVertices = []
+        unitNormal = .zero
+        historySaved = false
     }
 }

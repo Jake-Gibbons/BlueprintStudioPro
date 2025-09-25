@@ -43,113 +43,62 @@ struct ContentView: View {
     @State private var lastExportURL: URL? = nil
     @State private var showDocLauncher = false
     
-    // Toolbar height clamp (prevents jumpiness)
+    @State private var selectedDoorType: String = ""
+    @State private var selectedWindowType: String = ""
+    
+    // Visual height target for the tool row
     private let toolsRowHeight: CGFloat = 74
     
     var body: some View {
         ZStack {
-            FloorPlanView(currentTool: $selectedTool,
-                          snapToGrid: $snapToGrid,
-                          showDimensions: $showDimensions)
-            .environmentObject(floorPlan)
-            .edgesIgnoringSafeArea(.all)
-            
-            VStack(spacing: 0) {
-                Spacer()
-                
-                Picker("Category", selection: $category) {
-                    ForEach(Category.allCases) { cat in
-                        Text(cat.rawValue).tag(cat)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 8)
-                
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
-                        switch category {
-                        case .edit:
-                            editToolsRow
-                        case .build:
-                            buildToolsRow
-                        case .openings:
-                            openingsToolsRow
-                        case .view:
-                            viewToolsRow
-                        }
-                    }
-                    
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-            }
-            .frame(height: toolsRowHeight)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+            // Canvas
+            FloorPlanView(
+                currentTool: $selectedTool,
+                snapToGrid: $snapToGrid,
+                showDimensions: $showDimensions
             )
+            .environmentObject(floorPlan)
+            .ignoresSafeArea()
+        }
+        // Pills at the top corners
+        .overlay(projectPill
+                    .scaleEffect(0.9, anchor: .topLeading)
+                    .contentShape(Rectangle())
+                    .compositingGroup(),
+                 alignment: .topLeading)
+
+        .overlay(floorPill
+                    .scaleEffect(0.9, anchor: .topTrailing)
+                    .contentShape(Rectangle())
+                    .compositingGroup(),
+                 alignment: .topTrailing)
+        
+        
+        // Bottom stack: Category (top), Tools (middle), Utilities (bottom)
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 10) {
+                categorySelector
+                toolsTray
+                utilityBar
+                    .scaleEffect(0.9, anchor: .bottom)
+                    .contentShape(Rectangle())        // keeps a big tappable area
+                    .padding(.vertical, 2)            // tiny buffer so it’s not “too low”
+                    .compositingGroup()               // cleaner blur with materials when scaled
+
+            }
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
-            
-            // Utility bar
-            HStack(spacing: 10) {
-                IconBarButton(systemName: "arrow.uturn.backward", enabled: true) { floorPlan.undo() }
-                IconBarButton(systemName: "arrow.uturn.forward", enabled: true) { floorPlan.redo() }
-                
-                let hasSelection = (floorPlan.selectedRoomID != nil)
-                IconBarButton(systemName: "trash", enabled: hasSelection, isDestructive: true) { floorPlan.deleteSelectedRoom() }
-                
-                // Rename selected room quick action
-                IconBarButton(systemName: "text.cursor", enabled: hasSelection) {
-                    if let rid = floorPlan.selectedRoomID,
-                       let room = floorPlan.rooms.first(where: { $0.id == rid }) {
-                        pendingRoomName = room.name
-                    } else { pendingRoomName = "" }
-                    showRenameRoomAlert = true
-                }
-                
-                // === EXPORTS ===
-                IconBarButton(image: "document.json", enabled: true) {
-                    if let url = makeTemporaryExportFileJSON() {
-                        shareURL = url
-                        lastExportURL = url     // remember for launcher
-                        showShare = true
-                    }
-                }
-                IconBarButton(image: "document.png", enabled: true) {
-                    if let url = makeTemporaryExportPNG() {
-                        shareURL = url
-                        lastExportURL = url     // remember for launcher
-                        showShare = true
-                    }
-                }
-                IconBarButton(image: "document.dxf", enabled: true) {
-                    if let url = makeTemporaryExportDXF() {
-                        shareURL = url
-                        lastExportURL = url     // remember for launcher
-                        showShare = true
-                    }
-                }
-                
-                // Save quick (stores/updates in Projects)
-                IconBarButton(systemName: "square.and.arrow.up.on.square", enabled: lastExportURL != nil) {
-                    showDocLauncher = (lastExportURL != nil)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color.black.opacity(0.5))
         }
-    }
-    // MARK: - Top overlays (Project & Floor pills)
-        .overlay(projectPill, alignment: .topLeading)
-        .overlay(floorPill, alignment: .topTrailing)
-    
-    // MARK: - Exporters / Projects
-        .fileExporter(isPresented: $isExportingJSON, document: exportJSONDoc, contentType: .json, defaultFilename: "floorplan.json") { _ in }
+        
+        // Sheets / alerts
+        .fileExporter(
+            isPresented: $isExportingJSON,
+            document: exportJSONDoc,
+            contentType: .json,
+            defaultFilename: "floorplan.json"
+        ) {
+            _ in
+        }
         .sheet(isPresented: $showShare) {
             if let url = shareURL {
                 ShareSheet(activityItems: [url]).ignoresSafeArea()
@@ -168,18 +117,148 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) { }
             Button("Save") { projectName = pendingProjectName }
         } message: { Text("Enter a name for this project.") }
-        .alert("Rename Room", isPresented: $showRenameRoomAlert) {
-            TextField("Room name", text: $pendingRoomName)
-            Button("Cancel", role: .cancel) { }
-            Button("Save") { floorPlan.renameSelectedRoom(to: pendingRoomName.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        } message: { Text("Give this room a name.") }
-        .confirmationDialog("Start a new project? The current plan will be cleared.", isPresented: $confirmNewProject, titleVisibility: .visible) {
-            Button("Start New Project", role: .destructive) {
-                floorPlan.resetProject()
-                projectName = "Untitled Project"
+            .alert("Rename Room", isPresented: $showRenameRoomAlert) {
+                TextField("Room name", text: $pendingRoomName)
+                Button("Cancel", role: .cancel) { }
+                Button("Save") {
+                    floorPlan
+                        .renameSelectedRoom(
+                            to: pendingRoomName
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                        )
+                }
+            } message: { Text("Give this room a name.") }
+            .confirmationDialog(
+                "Start a new project? The current plan will be cleared.",
+                isPresented: $confirmNewProject,
+                titleVisibility: .visible
+            ) {
+                Button("Start New Project", role: .destructive) {
+                    floorPlan.resetProject()
+                    projectName = "Untitled Project"
+                }
+                Button("Cancel", role: .cancel) { }
             }
-            Button("Cancel", role: .cancel) { }
+    }
+    
+    // MARK: - Bottom components (ordered via safeAreaInset)
+    
+    private var categorySelector: some View {
+        Picker("Category", selection: $category) {
+            ForEach(Category.allCases) { cat in
+                Text(cat.rawValue).tag(cat)
+            }
         }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 6)
+        .padding(.top, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
+        )
+    }
+    
+    private var toolsTray: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                switch category {
+                case .edit:
+                    editToolsRow
+                case .build:
+                    buildToolsRow
+                case .openings:
+                    openingsToolsRow
+                case .view:
+                    viewToolsRow
+                }
+            }
+            .frame(minHeight: toolsRowHeight, alignment: .center)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+        )
+    }
+    
+    private var utilityBar: some View {
+        HStack(spacing: 10) {
+            IconBarButton(systemName: "arrow.uturn.backward", enabled: true) {
+                floorPlan.undo()
+            }
+            IconBarButton(systemName: "arrow.uturn.forward", enabled: true) {
+                floorPlan.redo()
+            }
+            
+            let hasSelection = (
+                floorPlan.selectedRoomID != nil
+            ) || !floorPlan.selectedRoomIDs.isEmpty
+            IconBarButton(
+                systemName: "trash",
+                enabled: hasSelection,
+                isDestructive: true
+            ) {
+                floorPlan.deleteSelectedRooms()
+            }
+            
+            // Rename selected room (single-active target)
+            IconBarButton(
+                systemName: "text.cursor",
+                enabled: floorPlan.activeRoomID != nil
+            ) {
+                if let rid = floorPlan.activeRoomID,
+                   let room = floorPlan.rooms.first(where: { $0.id == rid }) {
+                    pendingRoomName = room.name
+                } else { pendingRoomName = "" }
+                showRenameRoomAlert = true
+            }
+            
+            // === EXPORTS ===
+            IconBarButton(systemName: "curlybraces.square", enabled: true) {
+                if let url = makeTemporaryExportFileJSON() {
+                    shareURL = url
+                    lastExportURL = url
+                    showShare = true
+                }
+            }
+            IconBarButton(
+                systemName: "photo.on.rectangle.angled",
+                enabled: true
+            ) {
+                if let url = makeTemporaryExportPNG() {
+                    shareURL = url
+                    lastExportURL = url
+                    showShare = true
+                }
+            }
+            IconBarButton(systemName: "square.grid.3x3.square", enabled: true) {
+                if let url = makeTemporaryExportDXF() {
+                    shareURL = url
+                    lastExportURL = url
+                    showShare = true
+                }
+            }
+            
+            // Quick open last export
+            IconBarButton(
+                systemName: "square.and.arrow.up.on.square",
+                enabled: lastExportURL != nil
+            ) {
+                showDocLauncher = (lastExportURL != nil)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+        )
+    }
     
     // MARK: - Pills
     private var projectPill: some View {
@@ -188,30 +267,60 @@ struct ContentView: View {
                 Section("Project") {
                     Button {
                         confirmNewProject = true
-                    } label: { Label("New Project", systemImage: "doc.badge.plus") }
+                    } label: {
+                        Label("New Project", systemImage: "doc.badge.plus")
+                    }
                     
                     Button {
-                        exportJSONDoc = FloorPlanDocument(data: floorPlan.projectData())
+                        exportJSONDoc = FloorPlanDocument(
+                            data: floorPlan.projectData()
+                        )
                         isExportingJSON = true
-                    } label: { Label("Save (Full JSON)", systemImage: "square.and.arrow.down.on.square") }
+                    } label: {
+                        Label(
+                            "Save (Full JSON)",
+                            systemImage: "square.and.arrow.down.on.square"
+                        )
+                    }
                     
                     Button {
                         showProjectsSheet = true
-                    } label: { Label("Open / Manage Projects", systemImage: "folder") }
+                    } label: {
+                        Label("Open / Manage Projects", systemImage: "folder")
+                    }
                     
                     Button {
                         if let url = makeTemporaryExportFileJSON() {
                             shareURL = url; showShare = true
                         }
-                    } label: { Label("Export JSON (Vertices Only)", systemImage: "square.and.arrow.up") }
+                    } label: {
+                        Label(
+                            "Export JSON (Vertices Only)",
+                            systemImage: "square.and.arrow.up"
+                        )
+                    }
                     
                     Button {
-                        if let url = makeTemporaryExportPNG() { shareURL = url; showShare = true }
-                    } label: { Label("Export PNG", systemImage: "photo.on.rectangle.angled") }
+                        if let url = makeTemporaryExportPNG() {
+                            shareURL = url; showShare = true
+                        }
+                    } label: {
+                        Label(
+                            "Export PNG",
+                            systemImage: "photo.on.rectangle.angled"
+                        )
+                    }
                     
                     Button {
-                        if let url = makeTemporaryExportDXF() { shareURL = url; showShare = true }
-                    } label: { Label("Export DXF", systemImage: "square.grid.3x3.square") }
+                        if let url = makeTemporaryExportDXF() {
+                            shareURL = url; showShare = true
+                        }
+                    } label: {
+                        Label(
+                            "Export DXF",
+                            systemImage: "square.grid.3x3.square"
+                        )
+                    }
                 }
                 Section {
                     Button {
@@ -243,10 +352,13 @@ struct ContentView: View {
                 Section("Floors") {
                     ForEach(floorPlan.floors) { floor in
                         Button {
-                            if selectedTool == .resize { selectedTool = .select }
+                            if selectedTool == .resize {
+                                selectedTool = .select
+                            }
                             floorPlan.switchToFloor(floor.id)
                         } label: {
-                            if floorPlan.floors[floorPlan.currentFloorIndex].id == floor.id {
+                            if floorPlan
+                                .floors[floorPlan.currentFloorIndex].id == floor.id {
                                 Label(floor.name, systemImage: "checkmark")
                             } else { Text(floor.name) }
                         }
@@ -260,8 +372,10 @@ struct ContentView: View {
                     Button(role: .destructive) {
                         if selectedTool == .resize { selectedTool = .select }
                         floorPlan.deleteCurrentFloor()
-                    } label: { Label("Delete Current Floor", systemImage: "trash") }
-                        .disabled(floorPlan.floors.count <= 1)
+                    } label: {
+                        Label("Delete Current Floor", systemImage: "trash")
+                    }
+                    .disabled(floorPlan.floors.count <= 1)
                 }
             } label: {
                 HStack(spacing: 8) {
@@ -282,10 +396,13 @@ struct ContentView: View {
     // MARK: - Export helpers
     private func makeTemporaryExportFileJSON() -> URL? {
         let data = floorPlan.exportData()
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("floorplan-\(UUID().uuidString).json")
-        do { try data.write(to: url, options: .atomic); return url } catch { return nil }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "floorplan-\(UUID().uuidString).json"
+        )
+        do { try data.write(to: url, options: .atomic); return url } catch {
+            return nil
+        }
     }
-    
     
     private func makeTemporaryExportPNG() -> URL? {
         let logicalSize = CGSize(width: UIScreen.main.bounds.width,
@@ -311,17 +428,17 @@ struct ContentView: View {
         return url
     }
     
-    
-    
-    
     private func makeTemporaryExportDXF() -> URL? {
         let data = DXFExporter.makeDXF(floors: floorPlan.floors)
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("floorplan-\(UUID().uuidString).dxf")
-        do { try data.write(to: url, options: .atomic); return url } catch { return nil }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "floorplan-\(UUID().uuidString).dxf"
+        )
+        do { try data.write(to: url, options: .atomic); return url } catch {
+            return nil
+        }
     }
     
-    // MARK: - Small UI bits (unchanged)
-    
+    // MARK: - Small UI bits
     private struct WallTypeChip: View {
         let title: String
         let isActive: Bool
@@ -333,16 +450,51 @@ struct ContentView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .padding(.vertical, 6)
                     .padding(.horizontal, 10)
-                    .background(isActive ? Color.accentColor.opacity(0.18) : Color.clear)
+                    .background(
+                        isActive ? Color.accentColor.opacity(0.18) : Color.clear
+                    )
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(isActive ? Color.accentColor.opacity(0.6) : Color.gray.opacity(0.25), lineWidth: 1)
+                            .stroke(
+                                isActive ? Color.accentColor
+                                    .opacity(0.6) : Color.gray
+                                    .opacity(0.25),
+                                lineWidth: 1
+                            )
                     )
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .clipShape(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    )
             }
             .buttonStyle(.plain)
         }
     }
+    
+    private struct ToggleChip: View {
+        @Binding var isOn: Bool
+        var label: String
+        var onIcon: String
+        var offIcon: String
+
+        var body: some View {
+            Button { isOn.toggle() } label: {
+                Label(label, systemImage: isOn ? onIcon : offIcon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 12)
+                    .background(
+                        isOn ? Color.accentColor
+                            .opacity(0.20) : Color.gray
+                            .opacity(0.15),
+                        in: Capsule()
+                    )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(label))
+            .accessibilityValue(Text(isOn ? "On" : "Off"))
+        }
+    }
+
     
     private struct ToolButton: View {
         let tool: EditorTool
@@ -356,17 +508,28 @@ struct ContentView: View {
             } label: {
                 VStack(spacing: 4) {
                     Image(systemName: systemName).imageScale(.large)
-                    Text(tool.rawValue).font(.system(size: 11, weight: .semibold))
+                    Text(tool.rawValue)
+                        .font(.system(size: 11, weight: .semibold))
                 }
                 .padding(.vertical, 6)
                 .padding(.horizontal, 10)
                 .frame(minWidth: 58)
-                .background(selectedTool == tool ? Color.accentColor.opacity(0.18) : Color.clear)
+                .background(
+                    selectedTool == tool ? Color.accentColor
+                        .opacity(0.18) : Color.clear
+                )
                 .overlay(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(selectedTool == tool ? Color.accentColor.opacity(0.6) : Color.gray.opacity(0.25), lineWidth: 1)
+                        .stroke(
+                            selectedTool == tool ? Color.accentColor
+                                .opacity(0.6) : Color.gray
+                                .opacity(0.25),
+                            lineWidth: 1
+                        )
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .clipShape(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
                 .opacity(enabled ? 1.0 : 0.45)
             }
             .buttonStyle(.plain)
@@ -385,15 +548,18 @@ struct ContentView: View {
                 Image(systemName: systemName)
                     .font(.system(size: 18, weight: .semibold))
                     .imageScale(.large)
-                    .foregroundStyle(isDestructive ? (enabled ? .red : .gray) : .white.opacity(enabled ? 1 : 0.6))
+                    .foregroundStyle(
+                        isDestructive ? (enabled ? .red : .gray) : .primary
+                            .opacity(enabled ? 1 : 0.6)
+                    )
                     .padding(8)
                     .background(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(isDestructive && enabled ? Color.red.opacity(0.12) : Color.white.opacity(0.08))
+                            .fill(.thinMaterial)
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 1)
                     )
             }
             .disabled(!enabled)
@@ -402,36 +568,30 @@ struct ContentView: View {
         }
     }
     
-    private struct ToggleChip: View {
-        @Binding var isOn: Bool
-        var label: String
-        var onIcon: String
-        var offIcon: String
-        
-        var body: some View {
-            Button { isOn.toggle() } label: {
-                Label(label, systemImage: isOn ? onIcon : offIcon)
-                    .font(.system(size: 14, weight: .semibold))
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 12)
-                    .background(isOn ? Color.accentColor.opacity(0.2) : Color.gray.opacity(0.15), in: Capsule())
-            }
-            .buttonStyle(.plain)
-        }
-    }
-    
+    // MARK: - Tool Rows
+    @ViewBuilder
     private var editToolsRow: some View {
-        ToolButton(tool: .select, selectedTool: $selectedTool, systemName: "cursorarrow")
+        ToolButton(
+            tool: .select,
+            selectedTool: $selectedTool,
+            systemName: "cursorarrow"
+        )
         ToolButton(tool: .resize, selectedTool: $selectedTool, systemName: "square.and.pencil.circle",
-                   enabled: floorPlan.selectedRoomID != nil)
+                   enabled: floorPlan.activeRoomID != nil)
         ToolButton(tool: .duplicate, selectedTool: $selectedTool, systemName: "doc.on.doc",
-                   enabled: floorPlan.selectedRoomID != nil)
+                   enabled: floorPlan.activeRoomID != nil)
         ToolButton(tool: .rotate, selectedTool: $selectedTool, systemName: "rotate.right",
-                   enabled: floorPlan.selectedRoomID != nil)
-        ToolButton(tool: .delete, selectedTool: $selectedTool, systemName: "trash",
-                   enabled: floorPlan.selectedRoomID != nil)
+                   enabled: floorPlan.activeRoomID != nil)
+        ToolButton(
+tool: .delete,
+selectedTool: $selectedTool,
+systemName: "trash",
+enabled: (
+    floorPlan.activeRoomID != nil
+) || !floorPlan.selectedRoomIDs.isEmpty
+        )
         
-        if let rid = floorPlan.selectedRoomID,
+        if let rid = floorPlan.activeRoomID,
            let w = floorPlan.selectedWallIndex,
            let room = floorPlan.rooms.first(where: { $0.id == rid }),
            room.vertices.indices.contains(w) {
@@ -442,29 +602,77 @@ struct ContentView: View {
                 .fixedSize()
             WallTypeChip(
                 title: "Internal",
-                isActive: room.wallTypes.indices.contains(w) ? (room.wallTypes[w] == .internalWall) : false,
+                isActive: room.wallTypes.indices
+                    .contains(w) ? (room.wallTypes[w] == .internalWall) : false,
                 action: { floorPlan.setSelectedWallType(.internalWall) }
             )
             WallTypeChip(
                 title: "External",
-                isActive: room.wallTypes.indices.contains(w) ? (room.wallTypes[w] == .externalWall) : true,
+                isActive: room.wallTypes.indices
+                    .contains(w) ? (room.wallTypes[w] == .externalWall) : true,
                 action: { floorPlan.setSelectedWallType(.externalWall) }
             ).fixedSize()
         }
     }
     
-    
+    @ViewBuilder
     private var buildToolsRow: some View {
-        ToolButton(tool: .drawRoom, selectedTool: $selectedTool, systemName: "square.dashed")
-        ToolButton(tool: .drawWall, selectedTool: $selectedTool, systemName: "scribble")
+        ToolButton(
+            tool: .drawRoom,
+            selectedTool: $selectedTool,
+            systemName: "square.dashed"
+        )
+        ToolButton(
+            tool: .drawWall,
+            selectedTool: $selectedTool,
+            systemName: "scribble"
+        )
     }
     
+    @ViewBuilder
     private var openingsToolsRow: some View {
-        let hasAnyRoom = !floorPlan.rooms.isEmpty
-        ToolButton(tool: .addWindow, selectedTool: $selectedTool, systemName: "rectangle.split.2x1", enabled: hasAnyRoom)
-        ToolButton(tool: .addDoor, selectedTool: $selectedTool, systemName: "door.left.hand.open", enabled: hasAnyRoom)
+        // Doors
+        Menu {
+            Button("Single Door") {
+                selectedTool = .addDoor; selectedDoorType = "single"
+            }
+            Button("Double Door") {
+                selectedTool = .addDoor; selectedDoorType = "double"
+            }
+            Button("Door with Side Window") {
+                selectedTool = .addDoor; selectedDoorType = "sideLight"
+            }
+        } label: {
+            ToolButton(
+                tool: .addDoor,
+                selectedTool: $selectedTool,
+                systemName: "door.left.hand.open"
+            )
+        }
+        // Windows
+        Menu {
+            Button("Single Window") {
+                selectedTool = .addWindow; selectedWindowType = "single"
+            }
+            Button("Double Window") {
+                selectedTool = .addWindow; selectedWindowType = "double"
+            }
+            Button("Triple Window") {
+                selectedTool = .addWindow; selectedWindowType = "triple"
+            }
+            Button("Picture Window") {
+                selectedTool = .addWindow; selectedWindowType = "picture"
+            }
+        } label: {
+            ToolButton(
+                tool: .addWindow,
+                selectedTool: $selectedTool,
+                systemName: "rectangle.split.2x1"
+            )
+        }
     }
     
+    @ViewBuilder
     private var viewToolsRow: some View {
         HStack(spacing: 10) {
             ToggleChip(isOn: $snapToGrid,
@@ -477,7 +685,8 @@ struct ContentView: View {
                        offIcon: "ruler")
         }
     }
-    
 }
 
-#Preview { ContentView().environmentObject(Floorplan()) }
+#Preview {
+    ContentView().environmentObject(Floorplan())
+}
