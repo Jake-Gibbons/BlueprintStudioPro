@@ -52,6 +52,8 @@ enum WindowType: String, Codable {
     case picture
 }
 
+
+
 // NOTE: 'internal' is a Swift access-control keyword, so we use 'internalWall' instead.
 enum WallType: String, Codable {
     case internalWall
@@ -65,6 +67,8 @@ struct Room: Identifiable, Codable, Hashable {
     var wallTypes: [WallType]   // per-edge, same count as vertices
     var windows: [Window] = []
     var doors: [Door] = []
+    var stairs: [Stairs] = []   // <-- ADD THIS
+
     
     // Store HSBA directly so we can round-trip without UIKit.
     private var _h: Double
@@ -175,17 +179,19 @@ fileprivate func distancePointToSegment(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint
 // MARK: - Editor Tools
 
 enum EditorTool: String, CaseIterable, Identifiable {
-    case select  = "Select"   // Multi-select (toggle)
+    case select  = "Select"
     case delete  = "Delete"
     case drawWall = "Draw Wall"
     case drawRoom = "Draw Room"
     case addWindow = "Window"
     case addDoor  = "Door"
+    case addStairs = "Stairs"
     case resize   = "Resize"
     case duplicate = "Duplicate"
     case rotate    = "Rotate"
     var id: String { rawValue }
 }
+
 
 // MARK: - Floorplan (ObservableObject)
 
@@ -531,5 +537,39 @@ final class Floorplan: ObservableObject {
             ctx.addLine(to: CGPoint(x: p.x - dy, y: p.y + dx)) // orthogonal direction for thickness
             ctx.strokePath()
         }
+    }
+    
+    func addStairs(in roomID: UUID, at center: CGPoint) {
+        guard let idx = rooms.firstIndex(where: { $0.id == roomID }) else { return }
+        saveToHistory()
+        var r = rooms[idx]
+        r.stairs.append(Stairs(center: center))
+        rooms[idx] = r
+    }
+
+    
+struct Stairs: Identifiable, Codable, Hashable {
+    let id: UUID
+    var center: CGPoint          // model-space center
+    var length: CGFloat          // meters along run
+    var width: CGFloat           // meters across stairs
+    var steps: Int               // number of treads (visual)
+    var up: Bool                 // direction (for later arrows)
+    var rotation: CGFloat        // radians, 0 = +x
+
+    init(id: UUID = UUID(),
+         center: CGPoint,
+         length: CGFloat = 3.0,
+         width: CGFloat = 1.0,
+         steps: Int = 12,
+         up: Bool = true,
+         rotation: CGFloat = 0) {
+        self.id = id
+        self.center = center
+        self.length = length
+        self.width = width
+        self.steps = steps
+        self.up = up
+        self.rotation = rotation
     }
 }
