@@ -3,6 +3,9 @@ import Combine
 
 // MARK: - Core Models
 
+/// Represents a single floor within a floorplan. Each floor has a name and a collection
+/// of rooms. This struct conforms to `Codable` and `Equatable` so that it can be
+/// serialized/deserialized and compared.
 struct Floor: Identifiable, Equatable, Codable {
     let id: UUID
     var name: String
@@ -15,14 +18,17 @@ struct Floor: Identifiable, Equatable, Codable {
     }
 }
 
+/// Protocol for items that attach to a room's wall (doors and windows).  It records
+/// the wall index, an offset along that wall (0 to 1), and a length in meters.
 protocol WallAttachment: Codable {
-    var wallIndex: Int { get set }   // wall index in room polygon
-    var offset: CGFloat { get set }  // 0...1 along wall
-    var length: CGFloat { get set }  // meters
+    var wallIndex: Int { get set }
+    var offset: CGFloat { get set }
+    var length: CGFloat { get set }
 }
 
+/// A door attached to a wall of a room.  Doors can be single, double or have a sidelight.
 struct Door: Identifiable, WallAttachment {
-    // Default id so callers don't have to pass it
+    /// Default id so callers don't have to pass it
     let id: UUID = UUID()
     var wallIndex: Int
     var offset: CGFloat
@@ -30,8 +36,9 @@ struct Door: Identifiable, WallAttachment {
     var type: DoorType = .single
 }
 
+/// A window attached to a wall of a room.  Windows can be single, double, triple or picture style.
 struct Window: Identifiable, WallAttachment {
-    // Default id so callers don't have to pass it
+    /// Default id so callers don't have to pass it
     let id: UUID = UUID()
     var wallIndex: Int
     var offset: CGFloat
@@ -39,12 +46,14 @@ struct Window: Identifiable, WallAttachment {
     var type: WindowType = .single
 }
 
+/// Enum describing the type of door for rendering and export.
 enum DoorType: String, Codable {
     case single
     case double
     case sideLight
 }
 
+/// Enum describing window styles for drawing.
 enum WindowType: String, Codable {
     case single
     case double
@@ -52,14 +61,15 @@ enum WindowType: String, Codable {
     case picture
 }
 
-
-
-// NOTE: 'internal' is a Swift access-control keyword, so we use 'internalWall' instead.
+/// NOTE: 'internal' is a Swift access-control keyword, so we use 'internalWall' instead.
 enum WallType: String, Codable {
     case internalWall
     case externalWall
 }
 
+/// A polygonal room defined by its vertices. Rooms can contain doors, windows and
+/// staircases. The `Codable` conformance allows rooms to be persisted along with
+/// their contents.
 struct Room: Identifiable, Codable, Hashable {
     let id: UUID
     var name: String
@@ -67,9 +77,10 @@ struct Room: Identifiable, Codable, Hashable {
     var wallTypes: [WallType]   // per-edge, same count as vertices
     var windows: [Window] = []
     var doors: [Door] = []
-    var stairs: [Stairs] = []   // <-- ADD THIS
+    /// Staircases contained within the room. Each stairs instance
+    /// references its geometry and orientation relative to this room.
+    var stairs: [Stairs] = []
 
-    
     // Store HSBA directly so we can round-trip without UIKit.
     private var _h: Double
     private var _s: Double
@@ -108,7 +119,7 @@ struct Room: Identifiable, Codable, Hashable {
         }
     }
     
-    // Simple point-in-polygon
+    /// Simple point-in-polygon test using the even–odd rule.
     func contains(point: CGPoint) -> Bool {
         guard vertices.count >= 3 else { return false }
         var inside = false
@@ -125,6 +136,7 @@ struct Room: Identifiable, Codable, Hashable {
         return inside
     }
     
+    /// Returns the index of the wall nearest a given point if within a threshold distance.
     func indexOfWall(near p: CGPoint, threshold: CGFloat) -> Int? {
         guard vertices.count >= 2 else { return nil }
         var best: (idx: Int, d: CGFloat)? = nil
@@ -139,6 +151,7 @@ struct Room: Identifiable, Codable, Hashable {
         return best?.idx
     }
     
+    /// Builds a SwiftUI `Path` from this room's vertices using a provided transform.
     func path(using transform: (CGPoint) -> CGPoint) -> Path {
         var path = Path()
         guard let first = vertices.first else { return path }
@@ -163,7 +176,6 @@ struct Room: Identifiable, Codable, Hashable {
     static func == (lhs: Room, rhs: Room) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
-
 
 // MARK: - Geometry utility
 
@@ -192,9 +204,10 @@ enum EditorTool: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-
 // MARK: - Floorplan (ObservableObject)
 
+/// The root model holding all floors and rooms for a project.  This class also manages
+/// selection state, undo/redo stacks and helper methods for modifying rooms.
 final class Floorplan: ObservableObject {
     
     // Floors
@@ -281,10 +294,37 @@ final class Floorplan: ObservableObject {
         redoStack.removeAll()
     }
     
+    /// Rename the current floor to the provided name.
+    func renameCurrentFloor(to newName: String) {
+        guard floors.indices.contains(currentFloorIndex) else { return }
+        saveToHistory()
+        floors[currentFloorIndex].name = newName
+    }
+    
     // MARK: - Room ops
     func addRoom(vertices: [CGPoint]) {
         saveToHistory()
         rooms.append(Room(vertices: vertices))
+    }
+
+    /// Adds a rectangular room at the given centre point.  A default room is
+    /// 4 m wide and 4 m deep, but you can supply a custom size.  The room is
+    /// axis aligned in model space.
+    ///
+    /// - Parameters:
+    ///   - center: The centre of the new room in model metres.
+    ///   - size: The dimensions of the room in metres (width and height).  Default
+    ///     is 4×4.
+    func addRoom(at center: CGPoint, size: CGSize = CGSize(width: 4.0, height: 4.0)) {
+        let halfW = size.width / 2.0
+        let halfH = size.height / 2.0
+        let vertices = [
+            CGPoint(x: center.x - halfW, y: center.y - halfH),
+            CGPoint(x: center.x + halfW, y: center.y - halfH),
+            CGPoint(x: center.x + halfW, y: center.y + halfH),
+            CGPoint(x: center.x - halfW, y: center.y + halfH)
+        ]
+        addRoom(vertices: vertices)
     }
     
     func addNamedRoom(_ name: String, vertices: [CGPoint]) {
@@ -382,6 +422,7 @@ final class Floorplan: ObservableObject {
         )
         newRoom.windows = original.windows
         newRoom.doors = original.doors
+        newRoom.stairs = original.stairs
         rooms.append(newRoom)
         selectOnly(newRoom.id)
     }
@@ -539,6 +580,8 @@ final class Floorplan: ObservableObject {
         }
     }
     
+    /// Append a new staircase to the specified room.  A default staircase has a length
+    /// of 3 m and 12 steps.
     func addStairs(in roomID: UUID, at center: CGPoint) {
         guard let idx = rooms.firstIndex(where: { $0.id == roomID }) else { return }
         saveToHistory()
@@ -547,7 +590,51 @@ final class Floorplan: ObservableObject {
         rooms[idx] = r
     }
 
-    
+    /// Updates an existing staircase's position, rotation and/or scale.  Pass only the
+    /// parameters you wish to modify.  The update is applied relative to the current
+    /// values.  For example, a `delta` of `(1,0)` moves the stairs one meter to the
+    /// right, a `rotation` of `.pi/4` rotates the stairs by 45° and a `scale` of
+    /// `1.2` increases both the length and width by 20 percent.
+    ///
+    /// - Parameters:
+    ///   - roomID: Identifier of the room containing the stairs.
+    ///   - id: Identifier of the stairs to update.
+    ///   - delta: Optional translation in model‑space meters.
+    ///   - rotation: Optional rotation to add (in radians).
+    ///   - scale: Optional uniform scale factor to multiply the length and width.
+    func updateStairs(in roomID: UUID, id: UUID,
+                      delta: CGPoint? = nil,
+                      rotation: CGFloat? = nil,
+                      scale: CGFloat? = nil) {
+        guard let rIndex = rooms.firstIndex(where: { $0.id == roomID }) else { return }
+        var room = rooms[rIndex]
+        guard let sIndex = room.stairs.firstIndex(where: { $0.id == id }) else { return }
+        var stairs = room.stairs[sIndex]
+        // Apply pending updates
+        if let d = delta {
+            stairs.center.x += d.x
+            stairs.center.y += d.y
+        }
+        if let rot = rotation {
+            stairs.rotation += rot
+        }
+        if let sc = scale {
+            let factor = max(sc, 0.01)
+            stairs.length *= factor
+            stairs.width  *= factor
+        }
+        // Persist
+        saveToHistory()
+        room.stairs[sIndex] = stairs
+        rooms[rIndex] = room
+    }
+
+    // Close the Floorplan class before defining Stairs outside of it
+}
+
+/// A simple model describing a staircase within a room.  This is declared
+/// outside of ``Floorplan`` so that it can be encoded/decoded independently
+/// and referenced from ``Room``.
 struct Stairs: Identifiable, Codable, Hashable {
     let id: UUID
     var center: CGPoint          // model-space center
@@ -557,13 +644,15 @@ struct Stairs: Identifiable, Codable, Hashable {
     var up: Bool                 // direction (for later arrows)
     var rotation: CGFloat        // radians, 0 = +x
 
-    init(id: UUID = UUID(),
-         center: CGPoint,
-         length: CGFloat = 3.0,
-         width: CGFloat = 1.0,
-         steps: Int = 12,
-         up: Bool = true,
-         rotation: CGFloat = 0) {
+    init(
+        id: UUID = UUID(),
+        center: CGPoint,
+        length: CGFloat = 3.0,
+        width: CGFloat = 1.0,
+        steps: Int = 12,
+        up: Bool = true,
+        rotation: CGFloat = 0
+    ) {
         self.id = id
         self.center = center
         self.length = length
