@@ -2,13 +2,15 @@ import SwiftUI
 import UniformTypeIdentifiers
 import Combine
 
-/// The main entry point for Blueprint Studio Pro's user interface. This view coordinates the
-/// underlying `Floorplan` model with editing tools, categories, export operations and
-/// contextual overlays like the project and floor selectors. It uses environment objects
-/// to share the model across subviews and maintains local state for UI affordances such
-/// as which editor tool is currently active, whether dimensions are shown and whether
-/// snap‑to‑grid is enabled. The view is split into logical sections via private computed
-/// properties to keep the `body` relatively concise.
+/// The main entry point for Blueprint Studio Pro's user interface. This
+/// view coordinates the underlying `Floorplan` model with editing tools,
+/// categories, export operations and contextual overlays like the project
+/// and floor selectors. It uses environment objects to share the model
+/// across subviews and maintains local state for UI affordances such as
+/// which editor tool is currently active, whether dimensions are shown
+/// and whether snap‑to‑grid is enabled. The view is split into logical
+/// sections via private computed properties to keep the `body` relatively
+/// concise.
 struct ContentView: View {
     @EnvironmentObject var floorPlan: Floorplan
     @State private var selectedTool: EditorTool = .select
@@ -18,8 +20,9 @@ struct ContentView: View {
     @StateObject private var settings = AppSettings()   // <-- ADD
     @State private var showSettings: Bool = false       // <-- ADD
 
-    /// Categories used to drive the tools tray. Each category corresponds to a row of
-    /// tools appropriate for editing, building, openings or view settings.
+    /// Categories used to drive the tools tray. Each category corresponds
+    /// to a row of tools appropriate for editing, building, openings or view
+    /// settings.
     enum Category: String, CaseIterable, Identifiable {
         case edit = "Edit"
         case build = "Build"
@@ -54,6 +57,9 @@ struct ContentView: View {
     @State private var lastExportURL: URL? = nil
     @State private var showDocLauncher = false
 
+    // Track the selected opening types from the tools menus. These strings
+    // map to the `DoorType` and `WindowType` enums and are passed down to
+    // `FloorPlanView` so that taps can insert the appropriate attachment.
     @State private var selectedDoorType: String = ""
     @State private var selectedWindowType: String = ""
 
@@ -69,7 +75,9 @@ struct ContentView: View {
             FloorPlanView(
                 currentTool: $selectedTool,
                 snapToGrid: $snapToGrid,
-                showDimensions: $settings.showDimensions
+                showDimensions: $settings.showDimensions,
+                selectedDoorType: $selectedDoorType,
+                selectedWindowType: $selectedWindowType
             )
             .environmentObject(floorPlan)
             .environmentObject(settings)
@@ -77,8 +85,9 @@ struct ContentView: View {
         }
         // Pills at the top corners
         .overlay(
-            // Present the project pill.  Wrap it in a content shape and compositing
-            // group so that the `Menu` receives taps reliably, mirroring the floor pill.
+            // Present the project pill.  Wrap it in a content shape and
+            // compositing group so that the `Menu` receives taps reliably,
+            // mirroring the floor pill.
             projectPill
                 .scaleEffect(0.9, anchor: .topLeading)
                 .contentShape(Rectangle())
@@ -764,135 +773,133 @@ struct ContentView: View {
                        offIcon: "ruler")
         }
     }
-}
 
-// MARK: - Previews
-#Preview {
-    ContentView().environmentObject(Floorplan())
-}
+    // MARK: - Previews
+    #Preview {
+        ContentView().environmentObject(Floorplan())
+    }
 
-// MARK: - Room Inspector Sheet
+    // MARK: - Room Inspector Sheet
+    private struct RoomInspectorView: View {
+        @EnvironmentObject var floorPlan: Floorplan
+        @Environment(\.dismiss) private var dismiss
+        let room: Room
 
-private struct RoomInspectorView: View {
-    @EnvironmentObject var floorPlan: Floorplan
-    @Environment(\.dismiss) private var dismiss
-    let room: Room
+        @State private var floorName: String = ""
+        @State private var wallTexts: [String] = []
 
-    @State private var floorName: String = ""
-    @State private var wallTexts: [String] = []
+        var body: some View {
+            NavigationView {
+                List {
+                    Section("Floor") {
+                        TextField("Floor name", text: $floorName)
+                            .onSubmit {
+                                floorPlan.renameCurrentFloor(to: floorName)
+                            }
+                    }
 
-    var body: some View {
-        NavigationView {
-            List {
-                Section("Floor") {
-                    TextField("Floor name", text: $floorName)
-                        .onSubmit {
+                    Section("Walls (meters)") {
+                        // Loop through each wall index using its own index as the identifier. This
+                        // closure has been formatted on a single line to avoid accidental line
+                        // breaks that can corrupt the `id` parameter syntax.
+                        ForEach(wallIndices, id: \.self) { i in
+                            HStack {
+                                Text("Wall \(i + 1)")
+                                Spacer()
+                                TextField("\(wallLength(i), specifier: "%.2f")",
+                                          text: $wallTexts[i],
+                                          onCommit: { applyWallChange(i) })
+                                .multilineTextAlignment(.trailing)
+                                .keyboardType(.decimalPad)
+                                .frame(width: 100)
+                            }
+                        }
+                    }
+                }
+                .navigationTitle(room.name.isEmpty ? "Room" : room.name)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") {
+                            // Apply pending floor rename if edited
                             floorPlan.renameCurrentFloor(to: floorName)
-                        }
-                }
-
-                Section("Walls (meters)") {
-                    // Loop through each wall index using its own index as the identifier. This
-                    // closure has been formatted on a single line to avoid accidental line
-                    // breaks that can corrupt the `id` parameter syntax.
-                    ForEach(wallIndices, id: \.self) { i in
-                        HStack {
-                            Text("Wall \(i + 1)")
-                            Spacer()
-                            TextField("\(wallLength(i), specifier: "%.2f")",
-                                      text: $wallTexts[i],
-                                      onCommit: { applyWallChange(i) })
-                            .multilineTextAlignment(.trailing)
-                            .keyboardType(.decimalPad)
-                            .frame(width: 100)
+                            // Dismiss the sheet
+                            dismiss()
                         }
                     }
                 }
             }
-            .navigationTitle(room.name.isEmpty ? "Room" : room.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        // Apply pending floor rename if edited
-                        floorPlan.renameCurrentFloor(to: floorName)
-                        // Dismiss the sheet
-                        dismiss()
-                    }
+            .onAppear {
+                floorName = floorPlan.floors[floorPlan.currentFloorIndex].name
+                wallTexts = wallIndices.map { String(format: "%.2f", wallLength($0)) }
+            }
+        }
+
+        private var wallIndices: [Int] { Array(0..<room.vertices.count) }
+
+        private func wallLength(_ i: Int) -> CGFloat {
+            guard room.vertices.count >= 2 else { return 0 }
+            let a = room.vertices[i]
+            let b = room.vertices[(i + 1) % room.vertices.count]
+            return hypot(b.x - a.x, b.y - a.y)
+        }
+
+        private func applyWallChange(_ i: Int) {
+            let raw = wallTexts[i].replacingOccurrences(of: ",", with: ".")
+            guard let newLen = Double(raw), newLen > 0 else {
+                wallTexts[i] = String(format: "%.2f", wallLength(i))
+                return
+            }
+            floorPlan.setWallLength(roomID: room.id, wallIndex: i, newLength: CGFloat(newLen))
+            // refresh displayed lengths from model
+            if let updated = floorPlan.room(withID: room.id) {
+                let lens = (0..<updated.vertices.count).map { idx -> String in
+                    let a = updated.vertices[idx]
+                    let b = updated.vertices[(idx + 1) % updated.vertices.count]
+                    let m = hypot(b.x - a.x, b.y - a.y)
+                    return String(format: "%.2f", m)
                 }
+                wallTexts = lens
             }
         }
-        .onAppear {
-            floorName = floorPlan.floors[floorPlan.currentFloorIndex].name
-            wallTexts = wallIndices.map { String(format: "%.2f", wallLength($0)) }
-        }
     }
 
-    private var wallIndices: [Int] { Array(0..<room.vertices.count) }
-
-    private func wallLength(_ i: Int) -> CGFloat {
-        guard room.vertices.count >= 2 else { return 0 }
-        let a = room.vertices[i]
-        let b = room.vertices[(i + 1) % room.vertices.count]
-        return hypot(b.x - a.x, b.y - a.y)
-    }
-
-    private func applyWallChange(_ i: Int) {
-        let raw = wallTexts[i].replacingOccurrences(of: ",", with: ".")
-        guard let newLen = Double(raw), newLen > 0 else {
-            wallTexts[i] = String(format: "%.2f", wallLength(i))
-            return
+    // MARK: - Convenience operations on Floorplan used by the inspector
+    extension Floorplan {
+        /// Returns a copy of the room with the given id.
+        func room(withID id: UUID) -> Room? {
+            rooms.first(where: { $0.id == id })
         }
-        floorPlan.setWallLength(roomID: room.id, wallIndex: i, newLength: CGFloat(newLen))
-        // refresh displayed lengths from model
-        if let updated = floorPlan.room(withID: room.id) {
-            let lens = (0..<updated.vertices.count).map { idx -> String in
-                let a = updated.vertices[idx]
-                let b = updated.vertices[(idx + 1) % updated.vertices.count]
-                let m = hypot(b.x - a.x, b.y - a.y)
-                return String(format: "%.2f", m)
+
+        /// Sets a wall's length by moving one endpoint along its current direction.
+        /// - Parameters:
+        ///   - roomID: room identifier
+        ///   - wallIndex: index of the wall (edge from vertex i to i+1)
+        ///   - newLength: new length in model meters (> 0)
+        ///   - anchorAtStart: if `true`, keeps vertex i fixed and moves i+1. If `false`, keeps i+1 fixed and moves i.
+        func setWallLength(roomID: UUID, wallIndex: Int, newLength: CGFloat, anchorAtStart: Bool = true) {
+            guard newLength > 0,
+                  let rIndex = rooms.firstIndex(where: { $0.id == roomID }) else { return }
+            var room = rooms[rIndex]
+            guard room.vertices.count >= 2 else { return }
+
+            let i1 = wallIndex
+            let i2 = (wallIndex + 1) % room.vertices.count
+            let a = room.vertices[i1]
+            let b = room.vertices[i2]
+            let dx = b.x - a.x, dy = b.y - a.y
+            let len = hypot(dx, dy)
+            guard len > 0 else { return }
+            let ux = dx / len, uy = dy / len
+
+            saveToHistory()
+            if anchorAtStart {
+                room.vertices[i2] = CGPoint(x: a.x + ux * newLength, y: a.y + uy * newLength)
+            } else {
+                room.vertices[i1] = CGPoint(x: b.x - ux * newLength, y: b.y - uy * newLength)
             }
-            wallTexts = lens
+            rooms[rIndex] = room
+            objectWillChange.send()
         }
-    }
-}
-
-// MARK: - Convenience operations on Floorplan used by the inspector
-
-extension Floorplan {
-    /// Returns a copy of the room with the given id.
-    func room(withID id: UUID) -> Room? {
-        rooms.first(where: { $0.id == id })
-    }
-
-    /// Sets a wall's length by moving one endpoint along its current direction.
-    /// - Parameters:
-    ///   - roomID: room identifier
-    ///   - wallIndex: index of the wall (edge from vertex i to i+1)
-    ///   - newLength: new length in model meters (> 0)
-    ///   - anchorAtStart: if `true`, keeps vertex i fixed and moves i+1. If `false`, keeps i+1 fixed and moves i.
-    func setWallLength(roomID: UUID, wallIndex: Int, newLength: CGFloat, anchorAtStart: Bool = true) {
-        guard newLength > 0,
-              let rIndex = rooms.firstIndex(where: { $0.id == roomID }) else { return }
-        var room = rooms[rIndex]
-        guard room.vertices.count >= 2 else { return }
-
-        let i1 = wallIndex
-        let i2 = (wallIndex + 1) % room.vertices.count
-        let a = room.vertices[i1]
-        let b = room.vertices[i2]
-        let dx = b.x - a.x, dy = b.y - a.y
-        let len = hypot(dx, dy)
-        guard len > 0 else { return }
-        let ux = dx / len, uy = dy / len
-
-        saveToHistory()
-        if anchorAtStart {
-            room.vertices[i2] = CGPoint(x: a.x + ux * newLength, y: a.y + uy * newLength)
-        } else {
-            room.vertices[i1] = CGPoint(x: b.x - ux * newLength, y: b.y - uy * newLength)
-        }
-        rooms[rIndex] = room
-        objectWillChange.send()
     }
 }
