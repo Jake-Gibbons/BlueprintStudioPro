@@ -16,8 +16,8 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "877"
             endingLineNumber = "877"
-            landmarkName = "setWallLength(roomID:wallIndex:newLength:anchorAtStart:)"
-            landmarkType = "7">
+            landmarkName = "Floorplan"
+            landmarkType = "21">
          </BreakpointContent>
       </BreakpointProxy>
    </Breakpoints>

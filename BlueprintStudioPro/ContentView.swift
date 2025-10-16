@@ -16,10 +16,10 @@ struct ContentView: View {
     @State private var selectedTool: EditorTool = .select
     @State private var snapToGrid: Bool = true
     @State private var projectName: String = "Blueprint Studio Pro"
-
+    
     @StateObject private var settings = AppSettings()   // <-- ADD
     @State private var showSettings: Bool = false       // <-- ADD
-
+    
     /// Categories used to drive the tools tray. Each category corresponds
     /// to a row of tools appropriate for editing, building, openings or view
     /// settings.
@@ -31,44 +31,44 @@ struct ContentView: View {
         var id: String { rawValue }
     }
     @State private var category: Category = .edit
-
+    
     // Exporters
     @State private var isExportingJSON: Bool = false
     @State private var exportJSONDoc = FloorPlanDocument(data: Data())
-
+    
     @State private var showShare: Bool = false
     @State private var shareURL: URL?
-
+    
     // Projects
     @StateObject private var projectStore = ProjectStore()
     @State private var showProjectsSheet = false
-
+    
     // Rename project
     @State private var showRenameAlert: Bool = false
     @State private var pendingProjectName: String = ""
-
+    
     // Rename room
     @State private var showRenameRoomAlert: Bool = false
     @State private var pendingRoomName: String = ""
-
+    
     // Confirm new
     @State private var confirmNewProject: Bool = false
-
+    
     @State private var lastExportURL: URL? = nil
     @State private var showDocLauncher = false
-
+    
     // Track the selected opening types from the tools menus. These strings
     // map to the `DoorType` and `WindowType` enums and are passed down to
     // `FloorPlanView` so that taps can insert the appropriate attachment.
     @State private var selectedDoorType: String = ""
     @State private var selectedWindowType: String = ""
-
+    
     // Room inspector
     @State private var showRoomInspector: Bool = false
-
+    
     // Visual height target for the tool row
     private let toolsRowHeight: CGFloat = 74
-
+    
     var body: some View {
         ZStack {
             // Canvas
@@ -100,7 +100,7 @@ struct ContentView: View {
                  alignment: .topTrailing)
         // Room Info pill (shows only when exactly one room selected)
         .overlay(roomInfoPill, alignment: .topTrailing)
-
+        
         // Bottom stack: Category (top), Tools (middle), Utilities (bottom)
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 10) {
@@ -115,7 +115,7 @@ struct ContentView: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
         }
-
+        
         // Sheets / alerts
         .fileExporter(
             isPresented: $isExportingJSON,
@@ -140,7 +140,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showRoomInspector) {
             if let rid = singleSelectedRoomID,
-               let room = floorPlan.room(withID: rid) {
+               let room = $floorPlan.room(withID: rid) {
                 RoomInspectorView(room: room)
                     .environmentObject(floorPlan)
                     .presentationDetents([.medium, .large])
@@ -184,7 +184,7 @@ struct ContentView: View {
                 Button("Cancel", role: .cancel) { }
             }
     }
-
+    
     // Single selected room helper
     private var singleSelectedRoomID: UUID? {
         if let active = floorPlan.activeRoomID { return active }
@@ -192,7 +192,7 @@ struct ContentView: View {
         if let single = floorPlan.selectedRoomID { return single }
         return nil
     }
-
+    
     // MARK: - Top-right Room Info pill (under floor pill)
     private var roomInfoPill: some View {
         Group {
@@ -216,7 +216,7 @@ struct ContentView: View {
             }
         }
     }
-
+    
     // MARK: - Bottom components (ordered via safeAreaInset)
     private var categorySelector: some View {
         Picker("Category", selection: $category) {
@@ -233,7 +233,7 @@ struct ContentView: View {
                 .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
         )
     }
-
+    
     private var toolsTray: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
@@ -258,7 +258,7 @@ struct ContentView: View {
                 .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
         )
     }
-
+    
     private var utilityBar: some View {
         HStack(spacing: 10) {
             IconBarButton(systemName: "arrow.uturn.backward", enabled: true) {
@@ -267,7 +267,7 @@ struct ContentView: View {
             IconBarButton(systemName: "arrow.uturn.forward", enabled: true) {
                 floorPlan.redo()
             }
-
+            
             let hasSelection = (
                 floorPlan.activeRoomID != nil
             ) || !floorPlan.selectedRoomIDs.isEmpty
@@ -278,7 +278,7 @@ struct ContentView: View {
             ) {
                 floorPlan.deleteSelectedRooms()
             }
-
+            
             // Rename selected room (single-active target)
             IconBarButton(
                 systemName: "text.cursor",
@@ -290,7 +290,7 @@ struct ContentView: View {
                 } else { pendingRoomName = "" }
                 showRenameRoomAlert = true
             }
-
+            
             // === EXPORTS ===
             IconBarButton(systemName: "curlybraces.square", enabled: true) {
                 if let url = makeTemporaryExportFileJSON() {
@@ -316,7 +316,7 @@ struct ContentView: View {
                     showShare = true
                 }
             }
-
+            
             // Quick open last export
             IconBarButton(
                 systemName: "square.and.arrow.up.on.square",
@@ -334,7 +334,7 @@ struct ContentView: View {
                 .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
         )
     }
-
+    
     // MARK: - Pills
     private var projectPill: some View {
         Menu {
@@ -346,7 +346,7 @@ struct ContentView: View {
                 } label: {
                     Label("Settings", systemImage: "gearshape")
                 }
-
+                
                 // Secondary section for new project and export commands
                 Section {
                     Button {
@@ -354,7 +354,7 @@ struct ContentView: View {
                     } label: {
                         Label("New Project", systemImage: "doc.badge.plus")
                     }
-
+                    
                     Button {
                         exportJSONDoc = FloorPlanDocument(
                             data: floorPlan.projectData()
@@ -366,13 +366,13 @@ struct ContentView: View {
                             systemImage: "square.and.arrow.down.on.square"
                         )
                     }
-
+                    
                     Button {
                         showProjectsSheet = true
                     } label: {
                         Label("Open / Manage Projects", systemImage: "folder")
                     }
-
+                    
                     Button {
                         if let url = makeTemporaryExportFileJSON() {
                             shareURL = url; showShare = true
@@ -383,7 +383,7 @@ struct ContentView: View {
                             systemImage: "square.and.arrow.up"
                         )
                     }
-
+                    
                     Button {
                         if let url = makeTemporaryExportPNG() {
                             shareURL = url; showShare = true
@@ -394,7 +394,7 @@ struct ContentView: View {
                             systemImage: "photo.on.rectangle.angled"
                         )
                     }
-
+                    
                     Button {
                         if let url = makeTemporaryExportDXF() {
                             shareURL = url; showShare = true
@@ -428,7 +428,7 @@ struct ContentView: View {
         }
         .padding([.top, .leading], 16)
     }
-
+    
     private var floorPill: some View {
         HStack {
             Spacer()
@@ -476,7 +476,7 @@ struct ContentView: View {
         }
         .padding([.top, .trailing], 16)
     }
-
+    
     // MARK: - Export helpers
     private func makeTemporaryExportFileJSON() -> URL? {
         let data = floorPlan.exportData()
@@ -487,7 +487,7 @@ struct ContentView: View {
             return nil
         }
     }
-
+    
     private func makeTemporaryExportPNG() -> URL? {
         let logicalSize = CGSize(width: UIScreen.main.bounds.width,
                                  height: UIScreen.main.bounds.height)
@@ -511,7 +511,7 @@ struct ContentView: View {
         try? data.write(to: url)
         return url
     }
-
+    
     private func makeTemporaryExportDXF() -> URL? {
         let data = DXFExporter.makeDXF(floors: floorPlan.floors)
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -521,13 +521,13 @@ struct ContentView: View {
             return nil
         }
     }
-
+    
     // MARK: - Small UI bits
     private struct WallTypeChip: View {
         let title: String
         let isActive: Bool
         let action: () -> Void
-
+        
         var body: some View {
             Button(action: action) {
                 Text(title)
@@ -553,13 +553,13 @@ struct ContentView: View {
             .buttonStyle(.plain)
         }
     }
-
+    
     private struct ToggleChip: View {
         @Binding var isOn: Bool
         var label: String
         var onIcon: String
         var offIcon: String
-
+        
         var body: some View {
             Button { isOn.toggle() } label: {
                 Label(label, systemImage: isOn ? onIcon : offIcon)
@@ -578,13 +578,13 @@ struct ContentView: View {
             .accessibilityValue(Text(isOn ? "On" : "Off"))
         }
     }
-
+    
     private struct ToolButton: View {
         let tool: EditorTool
         @Binding var selectedTool: EditorTool
         let systemName: String
         var enabled: Bool = true
-
+        
         var body: some View {
             Button {
                 if enabled { selectedTool = tool }
@@ -619,13 +619,13 @@ struct ContentView: View {
             .disabled(!enabled)
         }
     }
-
+    
     private struct IconBarButton: View {
         let systemName: String
         let enabled: Bool
         var isDestructive: Bool = false
         let action: () -> Void
-
+        
         var body: some View {
             Button(action: action) {
                 Image(systemName: systemName)
@@ -650,7 +650,7 @@ struct ContentView: View {
             .accessibilityHidden(!enabled)
         }
     }
-
+    
     // MARK: - Tool Rows
     @ViewBuilder
     private var editToolsRow: some View {
@@ -673,7 +673,7 @@ struct ContentView: View {
                 floorPlan.activeRoomID != nil
             ) || !floorPlan.selectedRoomIDs.isEmpty
         )
-
+        
         if let rid = floorPlan.activeRoomID,
            let w = floorPlan.selectedWallIndex,
            let room = floorPlan.rooms.first(where: { $0.id == rid }),
@@ -697,7 +697,7 @@ struct ContentView: View {
             ).fixedSize()
         }
     }
-
+    
     @ViewBuilder
     private var buildToolsRow: some View {
         ToolButton(
@@ -716,7 +716,7 @@ struct ContentView: View {
             systemName: "stair.circle"
         )
     }
-
+    
     @ViewBuilder
     private var openingsToolsRow: some View {
         // Doors
@@ -759,7 +759,7 @@ struct ContentView: View {
             )
         }
     }
-
+    
     @ViewBuilder
     private var viewToolsRow: some View {
         HStack(spacing: 10) {
@@ -773,21 +773,21 @@ struct ContentView: View {
                        offIcon: "ruler")
         }
     }
-
+    
     // MARK: - Previews
     #Preview {
         ContentView().environmentObject(Floorplan())
     }
-
+    
     // MARK: - Room Inspector Sheet
     private struct RoomInspectorView: View {
         @EnvironmentObject var floorPlan: Floorplan
         @Environment(\.dismiss) private var dismiss
         let room: Room
-
+        
         @State private var floorName: String = ""
         @State private var wallTexts: [String] = []
-
+        
         var body: some View {
             NavigationView {
                 List {
@@ -797,7 +797,7 @@ struct ContentView: View {
                                 floorPlan.renameCurrentFloor(to: floorName)
                             }
                     }
-
+                    
                     Section("Walls (meters)") {
                         // Loop through each wall index using its own index as the identifier. This
                         // closure has been formatted on a single line to avoid accidental line
@@ -834,25 +834,25 @@ struct ContentView: View {
                 wallTexts = wallIndices.map { String(format: "%.2f", wallLength($0)) }
             }
         }
-
+        
         private var wallIndices: [Int] { Array(0..<room.vertices.count) }
-
+        
         private func wallLength(_ i: Int) -> CGFloat {
             guard room.vertices.count >= 2 else { return 0 }
             let a = room.vertices[i]
             let b = room.vertices[(i + 1) % room.vertices.count]
             return hypot(b.x - a.x, b.y - a.y)
         }
-
+        
         private func applyWallChange(_ i: Int) {
             let raw = wallTexts[i].replacingOccurrences(of: ",", with: ".")
             guard let newLen = Double(raw), newLen > 0 else {
                 wallTexts[i] = String(format: "%.2f", wallLength(i))
                 return
             }
-            floorPlan.setWallLength(roomID: room.id, wallIndex: i, newLength: CGFloat(newLen))
+            $floorPlan.setWallLength(roomID: room.id, wallIndex: i, newLength: CGFloat(newLen))
             // refresh displayed lengths from model
-            if let updated = floorPlan.room(withID: room.id) {
+            if let updated = $floorPlan.room(withID: room.id) {
                 let lens = (0..<updated.vertices.count).map { idx -> String in
                     let a = updated.vertices[idx]
                     let b = updated.vertices[(idx + 1) % updated.vertices.count]
@@ -863,14 +863,14 @@ struct ContentView: View {
             }
         }
     }
-
+    
     // MARK: - Convenience operations on Floorplan used by the inspector
     extension Floorplan {
         /// Returns a copy of the room with the given id.
         func room(withID id: UUID) -> Room? {
             rooms.first(where: { $0.id == id })
         }
-
+        
         /// Sets a wall's length by moving one endpoint along its current direction.
         /// - Parameters:
         ///   - roomID: room identifier
@@ -882,7 +882,7 @@ struct ContentView: View {
                   let rIndex = rooms.firstIndex(where: { $0.id == roomID }) else { return }
             var room = rooms[rIndex]
             guard room.vertices.count >= 2 else { return }
-
+            
             let i1 = wallIndex
             let i2 = (wallIndex + 1) % room.vertices.count
             let a = room.vertices[i1]
@@ -891,7 +891,7 @@ struct ContentView: View {
             let len = hypot(dx, dy)
             guard len > 0 else { return }
             let ux = dx / len, uy = dy / len
-
+            
             saveToHistory()
             if anchorAtStart {
                 room.vertices[i2] = CGPoint(x: a.x + ux * newLength, y: a.y + uy * newLength)
